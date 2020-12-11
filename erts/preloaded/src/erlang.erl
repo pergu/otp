@@ -112,6 +112,9 @@
 -type iovec() :: [binary()].
 -export_type([iovec/0]).
 
+%% Type for the destination of sends.
+-export_type([dst/0]).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Native code BIF stubs and their types
 %% (BIF's actually implemented in this module goes last in the file)
