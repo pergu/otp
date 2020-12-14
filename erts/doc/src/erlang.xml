@@ -242,7 +242,16 @@
 	MQD)</c></seeerl> </p>
       </desc>
     </datatype>
-    
+    <datatype>
+      <name name="send_destination"></name>
+      <desc>
+        <p>The destination for a send operation, can be a remote or local process identifier,
+          a (local) port, a locally registered name, or a tuple
+          <c>{<anno>RegName</anno>, <anno>Node</anno>}</c>
+        for a registered name at another node.</p>
+        <p>
+      </desc>
+    </datatype>
 
   </datatypes>
 
@@ -5947,7 +5956,7 @@ true</pre>
     <func>
       <name name="send" arity="2" since=""/>
       <fsummary>Send a message.</fsummary>
-      <type name="dst"/>
+      <type name="send_destination"/>
       <desc>
         <p>Sends a message and returns <c><anno>Msg</anno></c>. This
         is the same as using the <seeguide marker="system/reference_manual:expressions#send">
@@ -5967,7 +5976,7 @@ true</pre>
     <func>
       <name name="send" arity="3" since=""/>
       <fsummary>Send a message conditionally.</fsummary>
-      <type name="dst"/>
+      <type name="send_destination"/>
       <desc>
         <p>Either sends a message and returns <c>ok</c>, or does not send
           the message but returns something else (see below).
@@ -6023,7 +6032,7 @@ true</pre>
     <func>
       <name name="send_nosuspend" arity="2" since=""/>
       <fsummary>Try to send a message without ever blocking.</fsummary>
-      <type name="dst"/>
+      <type name="send_destination"/>
       <desc>
         <p>The same as
           <seemfa marker="#send/3"><c>erlang:send(<anno>Dest</anno>,
@@ -6073,7 +6082,7 @@ true</pre>
     <func>
       <name name="send_nosuspend" arity="3" since=""/>
       <fsummary>Try to send a message without ever blocking.</fsummary>
-      <type name="dst"/>
+      <type name="send_destination"/>
       <desc>
         <p>The same as
           <seemfa marker="#send/3"><c>erlang:send(<anno>Dest</anno>,
