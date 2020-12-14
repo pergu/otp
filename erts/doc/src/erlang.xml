@@ -255,7 +255,6 @@
           a (local) port, a locally registered name, or a tuple
           <c>{<anno>RegName</anno>, <anno>Node</anno>}</c>
         for a registered name at another node.</p>
-        <p>
       </desc>
     </datatype>
 
