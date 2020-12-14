@@ -217,8 +217,13 @@
         256, that is, an atom cache can contain 2048 entries.
       </p>
       <p>
-        After flag fields for atom cache references, another half byte flag
-        field is located with the following format:
+        Another half byte flag field is located along with flag fields for
+        atom cache references. When <c>NumberOfAtomCacheRefs</c> is even,
+        this half byte is the least significant half byte of the byte that
+        follows the atom cache references. When <c>NumberOfAtomCacheRefs</c>
+        is odd, this half byte is the most significant half byte of the last
+        byte of the atom cache references (on the wire, it will appear before
+        the last cache reference). It has the following format:
       </p>
       <table align="left">
         <row>
@@ -705,12 +710,14 @@
 	    marker="#ATOM_CACHE_REF"><c>ATOM_CACHE_REF</c></seeguide>.</p>
 	  </item>
 	  <tag><c>ID</c></tag>
-	  <item><p>A 32-bit big endian unsigned integer. Only 15 bits are
-	    significant; the rest are to be 0.</p>
+	  <item><p>A 32-bit big endian unsigned integer. If distribution flag
+	  <seeguide marker="erl_dist_protocol#DFLAG_V4_PIDS_REFS"><c>DFLAG_V4_PIDS_REFS</c></seeguide>
+	  is not set, only 15 bits may be used and the rest must be 0.</p>
 	  </item>
 	  <tag><c>Serial</c></tag>
-	  <item><p>A 32-bit big endian unsigned integer. Only 13 bits are
-	    significant; the rest are to be 0.</p>
+	  <item><p>A 32-bit big endian unsigned integer. If distribution flag
+	  <seeguide marker="erl_dist_protocol#DFLAG_V4_PIDS_REFS"><c>DFLAG_V4_PIDS_REFS</c></seeguide>
+	  is not set, only 13 bits may be used and the rest must be 0.</p>
 	  </item>
 	  <tag><c>Creation</c></tag>
 	  <item><p>A 32-bit big endian unsigned integer. All identifiers
@@ -730,6 +737,10 @@
 	  became mandatory. All pids are now encoded using <c>NEW_PID_EXT</c>,
 	  even external pids received as
 	  <seeguide marker="#PID_EXT"><c>PID_EXT</c></seeguide> from older nodes.
+	</p>
+	<p>In OTP 24 distribution flag
+	  <seeguide marker="erl_dist_protocol#DFLAG_V4_PIDS_REFS"><c>DFLAG_V4_PIDS_REFS</c></seeguide>
+	  was introduced, accepting full 64-bit pids to be decoded and echoed back.
 	</p>
     </section>
 
@@ -1041,7 +1052,9 @@
 	    or <seeguide marker="#ATOM_CACHE_REF"><c>ATOM_CACHE_REF</c></seeguide>.</p>
 	  </item>
 	  <tag><c>Len</c></tag>
-	  <item><p>A 16-bit big endian unsigned integer not larger than 3.</p>
+	  <item><p>A 16-bit big endian unsigned integer not larger than 5 when the
+	  <seeguide marker="erl_dist_protocol#DFLAG_V4_PIDS_REFS"><c>DFLAG_V4_PIDS_REFS</c></seeguide>
+	  has been set; otherwise not larger than 3.</p>
 	  </item>
 	  <tag><c>ID</c></tag>
 	  <item><p>A sequence of <c>Len</c> big-endian unsigned integers

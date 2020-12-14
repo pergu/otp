@@ -49,6 +49,8 @@
 	 max_sessions_sftp_start_channel_sequential/1, 
 	 max_sessions_ssh_connect_parallel/1, 
 	 max_sessions_ssh_connect_sequential/1, 
+         max_sessions_drops_tcp_connects/1,
+         max_sessions_drops_tcp_connects/0,
 	 server_password_option/1, 
 	 server_userpassword_option/1, 
 	 server_pwdfun_option/1,
@@ -78,6 +80,7 @@
 	 hostkey_fingerprint_check_sha512/1,
 	 hostkey_fingerprint_check_list/1,
          save_accepted_host_option/1,
+         raw_option/1,
          config_file/1,
          config_file_modify_algorithms_order/1
 	]).
@@ -137,6 +140,7 @@ all() ->
      id_string_own_string_server_trail_space,
      id_string_random_server,
      save_accepted_host_option,
+     raw_option,
      config_file,
      config_file_modify_algorithms_order,
      {group, hardening_tests}
@@ -150,7 +154,8 @@ groups() ->
 			    max_sessions_ssh_connect_parallel,
 			    max_sessions_ssh_connect_sequential,
 			    max_sessions_sftp_start_channel_parallel,
-			    max_sessions_sftp_start_channel_sequential
+			    max_sessions_sftp_start_channel_sequential,
+                            max_sessions_drops_tcp_connects
 			   ]},
      {dir_options, [], [user_dir_option,
                         user_dir_fun_option,
@@ -1327,19 +1332,6 @@ one_shell_op(IO, TimeOut) ->
 
     IO ! {input, self(), "2*3*7.\r\n"},
     receive
-	Echo0 -> ct:log("Echo: ~p ~n", [Echo0])
-    after TimeOut -> ct:fail("Timeout waiting for echo")
-    end,
-
-    receive
-	?NEWLINE -> ct:log("NEWLINE received", [])
-    after TimeOut -> 
-	    receive Any1 -> ct:log("Bad NEWLINE: ~p",[Any1])
-	    after 0 -> ct:fail("Timeout waiting for NEWLINE")
-	    end
-    end,
-
-    receive
 	Result0 -> ct:log("Result: ~p~n", [Result0])
     after TimeOut ->  ct:fail("Timeout waiting for result")
     end.
@@ -1404,7 +1396,7 @@ max_sessions(Config, ParallelLogin, Connect0) when is_function(Connect0,2) ->
 	    ct:log("Connections up: ~p",[Connections]),
 	    [_|_] = Connections,
 
-	    %% Now try one more than alowed:
+	    %% N w try one more than alowed:
 	    ct:pal("Info Report expected here (if not disabled) ...",[]),
 	    try Connect(Host,Port)
 	    of
@@ -1453,6 +1445,89 @@ try_to_connect(Connect, Host, Port, Pid, Tref, N) ->
      end.
 
 %%--------------------------------------------------------------------
+max_sessions_drops_tcp_connects() ->
+    [{timetrap,{minutes,5}}].
+
+max_sessions_drops_tcp_connects(Config) ->
+    MaxSessions = 20,
+    UseSessions = 2, % Must be =< MaxSessions
+    FloodSessions = 1000,
+    ParallelLogin = true,
+    NegTimeOut = 10*1000,
+    HelloTimeOut = 1*1000,
+
+    %% Start a test daemon
+    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
+    UserDir = proplists:get_value(priv_dir, Config),
+    {Pid, Host0, Port} =
+        ssh_test_lib:daemon([
+                             {system_dir, SystemDir},
+                             {user_dir, UserDir},
+                             {user_passwords, [{"carni", "meat"}]},
+                             {parallel_login, ParallelLogin},
+                             {hello_timeout, HelloTimeOut},
+                             {negotiation_timeout, NegTimeOut},
+                             {max_sessions, MaxSessions}
+                            ]),
+    Host = ssh_test_lib:mangle_connect_address(Host0),
+    ct:log("~p Listen ~p:~p for max ~p sessions. Mangled Host = ~p",
+           [Pid,Host0,Port,MaxSessions,Host]),
+    
+    %% Log in UseSessions connections
+    SSHconnect = fun(N) ->
+                         R = ssh:connect(Host, Port, 
+                                         [{silently_accept_hosts, true},
+                                          {user_dir, proplists:get_value(priv_dir,Config)},
+                                          {user_interaction, false},
+                                          {user, "carni"},
+                                          {password, "meat"}
+                                         ]),
+                         ct:log("~p: ssh:connect -> ~p", [N,R]),
+                         R
+                 end,
+
+    L1 = oks([SSHconnect(N) || N <- lists:seq(1,UseSessions)]),
+    case length(L1) of
+        UseSessions ->
+            %% As expected
+            %% Try gen_tcp:connect
+            [ct:log("~p: gen_tcp:connect -> ~p", 
+                    [N, gen_tcp:connect(Host, Port, [])])
+             || N <- lists:seq(UseSessions+1, MaxSessions)
+            ],
+
+            ct:log("Now try ~p gen_tcp:connect to be rejected", [FloodSessions]),
+            [ct:log("~p: gen_tcp:connect -> ~p", 
+                    [N, gen_tcp:connect(Host, Port, [])])
+             || N <- lists:seq(MaxSessions+1, MaxSessions+1+FloodSessions)
+            ],
+            
+            ct:log("try ~p ssh:connect", [MaxSessions - UseSessions]),
+            try_ssh_connect(MaxSessions - UseSessions, NegTimeOut, SSHconnect);
+
+        Len1 ->
+            {fail, Len1}
+    end.
+
+try_ssh_connect(N, NegTimeOut, F) when N>0 ->
+    case F(N) of
+        {ok,_} ->
+            try_ssh_connect(N-1, NegTimeOut, F);
+        {error,_} when N==1 ->
+            try_ssh_connect(N, NegTimeOut, F);
+        {error,_} ->
+            timer:sleep(NegTimeOut),
+            try_ssh_connect(N, NegTimeOut, F)
+    end;
+try_ssh_connect(_N, _NegTimeOut, _F) ->
+    done.
+
+
+oks(L) -> lists:filter(fun({ok,_}) -> true;
+                          (_) -> false
+                       end, L).
+    
+%%--------------------------------------------------------------------
 save_accepted_host_option(Config) ->
     UserDir = proplists:get_value(user_dir, Config),
     KnownHosts = filename:join(UserDir, "known_hosts"),
@@ -1478,6 +1553,12 @@ save_accepted_host_option(Config) ->
                                         {user_dir, UserDir}]),
     {ok,_} = file:read_file(KnownHosts),
     ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+raw_option(_Config) ->
+    Opts = [{raw,1,2,3,4}],
+    #{socket_options := Opts} = ssh_options:handle_options(client, Opts),
+    #{socket_options := Opts} = ssh_options:handle_options(server, Opts).
 
 %%--------------------------------------------------------------------
 config_file(Config) ->

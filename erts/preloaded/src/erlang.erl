@@ -57,6 +57,7 @@
 -deprecated([{now,0,
               "see the \"Time and Time Correction in Erlang\" "
               "chapter of the ERTS User's Guide for more information"}]).
+-deprecated([{phash,2, "use erlang:phash2/2 instead"}]).
 -removed([{hash,2,"use erlang:phash2/2 instead"}]).
 -removed([{get_stacktrace,0,
            "use the new try/catch syntax for retrieving the "
@@ -76,6 +77,7 @@
 -export_type([priority_level/0]).
 -export_type([max_heap_size/0]).
 -export_type([message_queue_data/0]).
+-export_type([monitor_option/0]).
 
 -type ext_binary() :: binary().
 -type ext_iovec() :: iovec().
@@ -142,7 +144,7 @@
 -export([delete_element/2]).
 -export([delete_module/1, demonitor/1, demonitor/2, display/1]).
 -export([display_nl/0, display_string/1, erase/0, erase/1]).
--export([error/1, error/2, exit/1, exit/2, exit_signal/2, external_size/1]).
+-export([error/1, error/2, error/3, exit/1, exit/2, exit_signal/2, external_size/1]).
 -export([external_size/2, finish_after_on_load/2, finish_loading/1, float/1]).
 -export([float_to_binary/1, float_to_binary/2,
 	 float_to_list/1, float_to_list/2, floor/1]).
@@ -163,7 +165,7 @@
 -export([list_to_pid/1, list_to_port/1, list_to_ref/1, list_to_tuple/1, loaded/0]).
 -export([localtime/0, make_ref/0]).
 -export([map_size/1, map_get/2, match_spec_test/3, md5/1, md5_final/1]).
--export([md5_init/0, md5_update/2, module_loaded/1, monitor/2]).
+-export([md5_init/0, md5_update/2, module_loaded/1, monitor/2, monitor/3]).
 -export([monitor_node/2, monitor_node/3, nif_error/1, nif_error/2]).
 -export([node/0, node/1, now/0, phash/2, phash2/1, phash2/2]).
 -export([pid_to_list/1, port_close/1, port_command/2, port_command/3]).
@@ -204,8 +206,9 @@
          tl/1, trace_pattern/2,
          trace_pattern/3, tuple_to_list/1, system_info/1,
          universaltime_to_localtime/1]).
+-export([alias/0, alias/1, unalias/1]).
 -export([dt_get_tag/0, dt_get_tag_data/0, dt_prepend_vm_tag_data/1, dt_append_vm_tag_data/1,
-	 dt_put_tag/1, dt_restore_tag/1, dt_spread_tag/1]). 
+	 dt_put_tag/1, dt_restore_tag/1, dt_spread_tag/1]).
 
 %% Operators
 
@@ -251,20 +254,10 @@
       type |
       uniq.
 
--type seq_trace_info() ::
-      'send' |
-      'receive' |
-      'print' |
-      'timestamp' |
-      'monotonic_timestamp' |
-      'strict_monotonic_timestamp' |
-      'label' |
-      'serial'.
-
 -type seq_trace_info_returns() ::
-      { seq_trace_info(), non_neg_integer() |
-                          boolean() |
-			  { non_neg_integer(), non_neg_integer() } } |
+      { 'send' | 'receive' | 'print' | 'timestamp' | 'monotonic_timestamp' | 'strict_monotonic_timestamp', boolean() } |
+      { 'label', term() } |
+      { 'serial', { non_neg_integer(), non_neg_integer() } } |
       [].
 
 -type system_profile_option() ::
@@ -745,6 +738,25 @@ demonitor(_MonitorRef) ->
 demonitor(_MonitorRef, _OptionList) ->
     erlang:nif_error(undefined).
 
+-spec alias() -> Alias when
+      Alias :: reference().
+
+alias() ->
+    erlang:alias([]).
+
+-spec alias(Opts) -> Alias when
+      Alias :: reference(),
+      Opts :: ['explicit_unalias' | 'reply'].
+
+alias(_Opts) ->
+    erlang:nif_error(undefined).
+
+-spec unalias(Alias) -> boolean() when
+      Alias :: reference().
+
+unalias(_Alias) ->
+    erlang:nif_error(undefined).
+
 %% display/1
 -spec erlang:display(Term) -> true when
       Term :: term().
@@ -831,6 +843,19 @@ error(_Reason) ->
       Reason :: term(),
       Args :: [term()].
 error(_Reason, _Args) ->
+    erlang:nif_error(undefined).
+
+%% error/3
+%% Shadowed by erl_bif_types: erlang:error/3
+-spec error(Reason, Args, Options) -> no_return() when
+      Reason :: term(),
+      Args :: [term()],
+      Options :: [Option],
+      Option :: {'error_info', ErrorInfoMap},
+      ErrorInfoMap :: #{'cause' => term(),
+                        'module' => module(),
+                        'function' => atom()}.
+error(_Reason, _Args, _Options) ->
     erlang:nif_error(undefined).
 
 %% exit/1
@@ -947,7 +972,7 @@ fun_info_mfa(_Fun) ->
     erlang:nif_error(undefined).
 
 %% fun_to_list/1
--spec erlang:fun_to_list(Fun) -> string() when
+-spec erlang:fun_to_list(Fun) -> String :: string() when
       Fun :: function().
 fun_to_list(_Fun) ->
     erlang:nif_error(undefined).
@@ -1349,6 +1374,8 @@ module_loaded(_Module) ->
 -type registered_process_identifier() :: registered_name() | {registered_name(), node()}.
 -type monitor_process_identifier() :: pid() | registered_process_identifier().
 -type monitor_port_identifier() :: port() | registered_name().
+-type monitor_option() :: {'alias', 'explicit_unalias' | 'demonitor' | 'reply_demonitor'}
+                        | {'tag', term()}.
 
 %% monitor/2
 -spec monitor
@@ -1356,10 +1383,22 @@ module_loaded(_Module) ->
 	  when MonitorRef :: reference();
       (port, monitor_port_identifier()) -> MonitorRef
 	  when MonitorRef :: reference();
-	    (time_offset, clock_service) -> MonitorRef
+      (time_offset, clock_service) -> MonitorRef
 	  when MonitorRef :: reference().
 
 monitor(_Type, _Item) ->
+    erlang:nif_error(undefined).
+
+%% monitor/3
+-spec monitor
+      (process, monitor_process_identifier(), [monitor_option()]) -> MonitorRef
+	  when MonitorRef :: reference();
+      (port, monitor_port_identifier(), [monitor_option()]) -> MonitorRef
+	  when MonitorRef :: reference();
+      (time_offset, clock_service, [monitor_option()]) -> MonitorRef
+	  when MonitorRef :: reference().
+
+monitor(_Type, _Item, _Opts) ->
     erlang:nif_error(undefined).
 
 %% monitor_node/2
@@ -1565,9 +1604,29 @@ timestamp() ->
       Module :: module(),
       Code :: binary(),
       PreparedCode :: prepared_code(),
-      Reason :: bad_file.
-prepare_loading(_Module, _Code) ->
-    erlang:nif_error(undefined).
+      Reason :: badfile.
+prepare_loading(Module, <<"FOR1",_/bits>>=Code) ->
+    prepare_loading_1(Module, Code);
+prepare_loading(Module, Code0) ->
+    %% Corrupt header or compressed module, attempt to decompress it before
+    %% passing it to the loader and leave error signalling to the BIF.
+    Code = try zlib:gunzip(Code0) of
+               Decompressed -> Decompressed
+           catch
+               _:_ -> Code0
+           end,
+
+    prepare_loading_1(Module, Code).
+
+prepare_loading_1(Module, Code) ->
+    try erts_internal:prepare_loading(Module, Code) of
+        Res -> Res
+    catch
+        error:Reason ->
+            {'EXIT',{new_stacktrace,[{Mod,_,L,Loc}|Rest]}} =
+                (catch erlang:error(new_stacktrace, [Module,Code])),
+            erlang:raise(error, Reason, [{Mod,prepare_loading,L,Loc}|Rest])
+    end.
 
 %% pre_loaded/0
 -spec pre_loaded() -> [module()].
@@ -1645,8 +1704,8 @@ put(_Key, _Val) ->
     erlang:nif_error(undefined).
 
 %% raise/3
--spec erlang:raise(Class, Reason, Stacktrace) -> no_return() when
-      Class :: error | exit | throw,
+-spec erlang:raise(Class, Reason, Stacktrace) -> 'badarg' when
+      Class :: 'error' | 'exit' | 'throw',
       Reason :: term(),
       Stacktrace :: raise_stacktrace().
 raise(_Class, _Reason, _Stacktrace) ->
@@ -2434,7 +2493,7 @@ send(_Dest,_Msg,_Options) ->
                     (timestamp) -> {timestamp, boolean()};
                     (monotonic_timestamp) -> {timestamp, boolean()};
                     (strict_monotonic_timestamp) -> {strict_monotonic_timestamp, boolean()};
-                    (label) -> [] | {label, non_neg_integer()};
+                    (label) -> [] | {label, term()};
                     (serial) -> [] | {serial, {non_neg_integer(), non_neg_integer()}}.
 seq_trace_info(_What) ->
     erlang:nif_error(undefined).
@@ -2615,7 +2674,7 @@ term_to_iovec(_Term, _Options) ->
 
 %% Shadowed by erl_bif_types: erlang:tl/1
 -spec tl(List) -> term() when
-      List :: [term(), ...].
+      List :: nonempty_maybe_improper_list().
 tl(_List) ->
     erlang:nif_error(undefined).
 
@@ -2722,7 +2781,7 @@ tuple_to_list(_Tuple) ->
       Alloc :: atom();
          (atom_count) -> pos_integer();
          (atom_limit) -> pos_integer();
-         (build_type) -> opt | debug | purify | quantify | purecov |
+         (build_type) -> opt | debug |
                          gcov | valgrind | gprof | lcnt | frmptr;
          (c_compiler_used) -> {atom(), term()};
          (check_io) -> [_];
@@ -2744,9 +2803,10 @@ tuple_to_list(_Tuple) ->
          (driver_version) -> string();
          (dynamic_trace) -> none | dtrace | systemtap;
          (dynamic_trace_probes) -> boolean();
-         (end_time) -> non_neg_integer();
-         (elib_malloc) -> false;
          (eager_check_io) -> boolean();
+         (emu_flavor) -> emu | jit;
+         (emu_type) -> opt | debug | gcov | valgrind | gprof | lcnt | frmptr;
+         (end_time) -> non_neg_integer();
          (ets_count) -> pos_integer();
          (ets_limit) -> pos_integer();
          (fullsweep_after) -> {fullsweep_after, non_neg_integer()};
@@ -2928,6 +2988,7 @@ spawn_monitor(M, F, A) ->
 -type spawn_opt_option() ::
 	link
       | monitor
+      | {monitor, MonitorOpts :: [monitor_option()]}
       | {priority, Level :: priority_level()}
       | {fullsweep_after, Number :: non_neg_integer()}
       | {min_heap_size, Size :: non_neg_integer()}
@@ -2948,7 +3009,10 @@ spawn_opt(F, O) ->
 -spec spawn_opt(Node, Fun, Options) -> pid() | {pid(), reference()} when
       Node :: node(),
       Fun :: function(),
-      Options :: [monitor | link | OtherOption],
+      Options :: [monitor |
+                  {monitor, [monitor_option()]} |
+                  link |
+                  OtherOption],
       OtherOption :: term().
 spawn_opt(N, F, O) when N =:= erlang:node() ->
     erlang:spawn_opt(F, O);
@@ -3051,11 +3115,13 @@ spawn_monitor(N,M,F,A) ->
     erlang:error(badarg, [N, M, F, A]).
 
 -spec spawn_opt(Module, Function, Args, Options) ->
-                       pid() | {pid(), reference()} when
+          Pid | {Pid, MonitorRef} when
       Module :: module(),
       Function :: atom(),
       Args :: [term()],
-      Options :: [spawn_opt_option()].
+      Options :: [spawn_opt_option()],
+      Pid :: pid(),
+      MonitorRef :: reference().
 spawn_opt(_Module, _Function, _Args, _Options) ->
    erlang:nif_error(undefined).
 
@@ -3066,7 +3132,10 @@ spawn_opt(_Module, _Function, _Args, _Options) ->
       Module :: module(),
       Function :: atom(),
       Args :: [term()],
-      Options :: [monitor | link | OtherOption],
+      Options :: [monitor |
+                  {monitor, [monitor_option()]} |
+                  link |
+                  OtherOption],
       OtherOption :: term().
 
 spawn_opt(N, M, F, A, O) when N =:= erlang:node(),
@@ -3213,6 +3282,7 @@ spawn_request(A1, A2) ->
       Fun :: function(),
       Options :: [Option],
       Option :: monitor
+              | {monitor, [monitor_option()]}
               | link
               | {reply_tag, ReplyTag}
               | {reply, Reply}
@@ -3294,6 +3364,7 @@ spawn_request(M, F, A, O) ->
       Args :: [term()],
       Options :: [Option],
       Option :: monitor
+              | {monitor, [monitor_option()]}
               | link
               | {reply_tag, ReplyTag}
               | {reply, Reply}
@@ -3325,6 +3396,8 @@ spawn_request_abandon(_ReqId) ->
 
 -spec erlang:yield() -> 'true'.
 yield() ->
+    % This is not an infinite loop because erlang:yield() is
+    % translated to an instruction by the loader
     erlang:yield().
 
 -spec nodes() -> Nodes when
@@ -3354,9 +3427,11 @@ fun_info_1([K|Ks], Fun, A) ->
 fun_info_1([], _, A) -> A.
 
 -type send_destination() :: pid()
+                            | reference()
                             | port()
                             | (RegName :: atom())
                             | {RegName :: atom(), Node :: node()}.
+
 
 -spec erlang:send_nosuspend(Dest, Msg) -> boolean() when
       Dest :: send_destination(),
@@ -3961,17 +4036,14 @@ fix_proc([], Acc) ->
     Acc.
 
 au_mem_fix(#memory{ processes = Proc,
-                    processes_used = ProcU,
-                    system = Sys } = Mem, Data) ->
+                    processes_used = ProcU } = Mem, Data) ->
     case fix_proc(Data, {0, 0}) of
         {A, U} ->
             Mem#memory{ processes = Proc+A,
-                        processes_used = ProcU+U,
-                        system = Sys-A };
+                        processes_used = ProcU+U };
         {Mask, A, U} ->
             Mem#memory{ processes = Mask band (Proc+A),
-                        processes_used = Mask band (ProcU+U),
-                        system = Mask band (Sys-A) }
+                        processes_used = Mask band (ProcU+U) }
     end.
 
 au_mem_acc(#memory{ total = Tot,
@@ -3983,27 +4055,21 @@ au_mem_acc(#memory{ total = Tot,
                 processes = Proc+Sz,
                 processes_used = ProcU+Sz};
 au_mem_acc(#memory{ total = Tot,
-                    system = Sys,
                     ets = Ets } = Mem,
            ets_alloc, Data) ->
     Sz = acc_blocks_size(Data, 0),
     Mem#memory{ total = Tot+Sz,
-                system = Sys+Sz,
                 ets = Ets+Sz };
 au_mem_acc(#memory{total = Tot,
-		    system = Sys,
 		    binary = Bin } = Mem,
 	    binary_alloc, Data) ->
     Sz = acc_blocks_size(Data, 0),
     Mem#memory{ total = Tot+Sz,
-                system = Sys+Sz,
                 binary = Bin+Sz};
-au_mem_acc(#memory{ total = Tot,
-                    system = Sys } = Mem,
+au_mem_acc(#memory{ total = Tot } = Mem,
            _Type, Data) ->
     Sz = acc_blocks_size(Data, 0),
-    Mem#memory{ total = Tot+Sz,
-                system = Sys+Sz }.
+    Mem#memory{ total = Tot+Sz }.
 
 acc_blocks_size([{size, Sz, _, _} | Rest], Acc) ->
     acc_blocks_size(Rest, Acc+Sz);
@@ -4066,10 +4132,11 @@ receive_emd(Ref, EMD, N) ->
 receive_emd(Ref) ->
     receive_emd(Ref, #memory{}, erlang:system_info(schedulers)).
 
-aa_mem_data(#memory{} = Mem,
-	    [{total, Tot} | Rest]) ->
-    aa_mem_data(Mem#memory{total = Tot,
-			   system = 0}, % system will be adjusted later
+aa_mem_data(#memory{total = Tot} = Mem,
+	    [{external_alloc, Sz} | Rest]) ->
+    %% Externally allocated data, this is not a part of alloc_util so we must
+    %% bump the total memory size.
+    aa_mem_data(Mem#memory{total = Tot + Sz},
 		Rest);
 aa_mem_data(#memory{atom = Atom,
 		    atom_used = AtomU} = Mem,
@@ -4088,13 +4155,11 @@ aa_mem_data(#memory{ets = Ets} = Mem,
     aa_mem_data(Mem#memory{ets = Ets+Sz},
 		Rest);
 aa_mem_data(#memory{processes = Proc,
-		    processes_used = ProcU,
-		    system = Sys} = Mem,
+		    processes_used = ProcU } = Mem,
 	    [{ProcData, Sz} | Rest]) when ProcData == bif_timer;
 					  ProcData == process_table ->
     aa_mem_data(Mem#memory{processes = Proc+Sz,
-			   processes_used = ProcU+Sz,
-			   system = Sys-Sz},
+			   processes_used = ProcU+Sz },
 		Rest);
 aa_mem_data(#memory{code = Code} = Mem,
 	    [{CodeData, Sz} | Rest]) when CodeData == module_table;
@@ -4107,14 +4172,10 @@ aa_mem_data(#memory{code = Code} = Mem,
 		Rest);
 aa_mem_data(EMD, [{_, _} | Rest]) ->
     aa_mem_data(EMD, Rest);
-aa_mem_data(#memory{total = Tot,
-		    processes = Proc,
-		    system = Sys} = Mem,
-	    []) when Sys =< 0 ->
-    %% Instrumented runtime system -> Sys = Tot - Proc
-    Mem#memory{system = Tot - Proc};
-aa_mem_data(EMD, []) ->
-    EMD.
+aa_mem_data(#memory{ total = Tot,
+                     processes = Proc } = Mem,
+            []) ->
+    Mem#memory{system = Tot - Proc}.
 
 aa_mem_data(notsup) ->
     notsup;

@@ -44,7 +44,6 @@
          monitor_process_purge/1,
          demonitor_process/1,
          monitor_frenzy/1,
-         hipe/1,
 	 types/1, many_args/1, binaries/1, get_string/1, get_atom/1,
 	 maps/1,
 	 api_macros/1,
@@ -95,7 +94,6 @@ all() ->
      select, select_steal,
      {group, monitor},
      monitor_frenzy,
-     hipe,
      t_load_race,
      t_call_nif_early,
      load_traced_nif,
@@ -160,11 +158,6 @@ end_per_group(_,_) -> ok.
 init_per_testcase(t_on_load, Config) ->
     ets:new(nif_SUITE, [named_table]),
     Config;
-init_per_testcase(hipe, Config) ->
-    case erlang:system_info(hipe_architecture) of
-	undefined -> {skip, "HiPE is disabled"};
-	_ -> Config
-    end;
 init_per_testcase(nif_whereis_threaded, Config) ->
     case erlang:system_info(threads) of
         true -> Config;
@@ -1166,18 +1159,6 @@ gc_and_return(RetVal) ->
     erlang:garbage_collect(),
     RetVal.
 
-hipe(Config) when is_list(Config) ->
-    Data = proplists:get_value(data_dir, Config),
-    Priv = proplists:get_value(priv_dir, Config),
-    Src = filename:join(Data, "hipe_compiled"),
-    {ok,hipe_compiled} = c:c(Src, [{outdir,Priv},native]),
-    true = code:is_module_native(hipe_compiled),
-    {error, {notsup,_}} = hipe_compiled:try_load_nif(),
-    true = code:delete(hipe_compiled),
-    false = code:purge(hipe_compiled),
-    ok.
-
-
 %% Test NIF building heap fragments
 heap_frag(Config) when is_list(Config) ->    
     TmpMem = tmpmem(),
@@ -1433,6 +1414,21 @@ maps(Config) when is_list(Config) ->
                          {K+1, maps:put(K,K*100,Map)}
                  end,
                  {1,#{}}),
+
+    M5 = lists:foldl(fun(N, MapIn) ->
+                             {1, #{N := value}=MapOut} = make_map_put_nif(MapIn, N, value),
+                             MapOut
+                     end,
+                     #{},
+                     lists:seq(1,40)),
+    M6 = lists:foldl(fun(N, MapIn) ->
+                             {1, MapOut} = make_map_remove_nif(MapIn, N),
+                             ok = maps:get(N, MapOut, ok),
+                             MapOut
+                     end,
+                     M5,
+                     lists:seq(1,40)),
+    true = (M6 =:= #{}),
 
     has_duplicate_keys = maps_from_list_nif([{1,1},{1,1}]),
 
@@ -2521,29 +2517,52 @@ consume_timeslice_test(Config) when is_list(Config) ->
               end),
     erlang:yield(),
 
-    erlang:trace_pattern(DummyMFA, [], [local]),
+    erlang:trace_pattern(DummyMFA, [{'_', [], [{return_trace}]}], [local]),
     1 = erlang:trace(P, true, [call, running, procs, {tracer, self()}]),
 
     P ! Go,
 
     %% receive Go -> ok end,
     {trace, P, in, _} = next_tmsg(P),
-    
+
     %% consume_timeslice_nif(100),
     %% dummy_call(111)
-    {trace, P, out, _} = next_tmsg(P),
-    {trace, P, in, _} = next_tmsg(P),
-    {trace, P, call, {?MODULE,dummy_call,[111]}} = next_tmsg(P),
+    %%
+    %% Note that we may be scheduled out immediately before or immediately
+    %% "after" dummy_call(111) depending on when the emulator tests reductions.
+    %%
+    %% In either case, we should be rescheduled before the function returns.
+    Dummy_111 = {?MODULE,dummy_call,[111]},
+    case next_tmsg(P) of
+        {trace, P, out, _} ->
+            %% See dummy_call(111) above
+            {trace, P, in, _} = next_tmsg(P),
+            {trace, P, call, Dummy_111} = next_tmsg(P);
+        {trace, P, call, Dummy_111} ->
+            {trace, P, out, _} = next_tmsg(P),
+            {trace, P, in, _} = next_tmsg(P)
+    end,
+    {trace, P, return_from, DummyMFA, ok} = next_tmsg(P),
 
     %% consume_timeslice_nif(90),
     %% dummy_call(222)
-    {trace, P, call, {?MODULE,dummy_call,[222]}} = next_tmsg(P),
+    Dummy_222 = {?MODULE,dummy_call,[222]},
+    {trace, P, call, Dummy_222} = next_tmsg(P),
+    {trace, P, return_from, DummyMFA, ok} = next_tmsg(P),
 
     %% consume_timeslice_nif(10),
     %% dummy_call(333)
-    {trace, P, out, _} = next_tmsg(P),
-    {trace, P, in, _} = next_tmsg(P),
-    {trace, P, call, {?MODULE,dummy_call,[333]}} = next_tmsg(P),
+    Dummy_333 = {?MODULE,dummy_call,[333]},
+    case next_tmsg(P) of
+        {trace, P, out, _} ->
+            %% See dummy_call(111) above
+            {trace, P, in, _} = next_tmsg(P),
+            {trace, P, call, Dummy_333} = next_tmsg(P);
+        {trace, P, call, Dummy_333} ->
+            {trace, P, out, _} = next_tmsg(P),
+            {trace, P, in, _} = next_tmsg(P)
+    end,
+    {trace, P, return_from, DummyMFA, ok} = next_tmsg(P),
 
     %% 25,25,25,25, 25
     {trace, P, out, {?MODULE,consume_timeslice_nif,2}} = next_tmsg(P),
@@ -2551,9 +2570,17 @@ consume_timeslice_test(Config) when is_list(Config) ->
 
     %% consume_timeslice(1,true)
     %% dummy_call(444)
-    {trace, P, out, DummyMFA} = next_tmsg(P),
-    {trace, P, in, DummyMFA} = next_tmsg(P),
-    {trace, P, call, {?MODULE,dummy_call,[444]}} = next_tmsg(P),
+    Dummy_444 = {?MODULE,dummy_call,[444]},
+    case next_tmsg(P) of
+        {trace, P, out, DummyMFA} ->
+            %% See dummy_call(111) above
+            {trace, P, in, DummyMFA} = next_tmsg(P),
+            {trace, P, call, Dummy_444} = next_tmsg(P);
+        {trace, P, call, Dummy_444} ->
+            {trace, P, out, DummyMFA} = next_tmsg(P),
+            {trace, P, in, DummyMFA} = next_tmsg(P)
+    end,
+    {trace, P, return_from, DummyMFA, ok} = next_tmsg(P),
 
     %% exit(Done)
     {trace, P, exit, Done} = next_tmsg(P),

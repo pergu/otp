@@ -175,7 +175,9 @@ makes_ref(#b_set{dst=Dst,args=[Func0|_]}, Blocks) ->
     case MFA of
         {erlang,make_ref,0} ->
             {yes,Dst};
-        {erlang,monitor,2} ->
+        {erlang,alias,A}  when A == 0; A == 1 ->
+            {yes,Dst};
+        {erlang,monitor,A} when A == 2; A == 3 ->
             {yes,Dst};
         {erlang,spawn_request,A} when 1 =< A, A =< 5 ->
             {yes,Dst};
@@ -191,7 +193,8 @@ ref_in_tuple(Tuple, Blocks) ->
               when Tup =:= Tuple -> {yes,Ref};
            (_, A) -> A
         end,
-    beam_ssa:fold_instrs_rpo(F, [0], no, Blocks).
+    RPO = beam_ssa:rpo(Blocks),
+    beam_ssa:fold_instrs(F, RPO, no, Blocks).
 
 opt_ref_used(L, Ref, Blocks) ->
     Vs = #{Ref=>ref,ref=>Ref,ref_matched=>false},

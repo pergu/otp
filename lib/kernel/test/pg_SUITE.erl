@@ -38,9 +38,12 @@
     pg/0, pg/1,
     errors/0, errors/1,
     leave_exit_race/0, leave_exit_race/1,
+    dyn_distribution/0, dyn_distribution/1,
+    process_owner_check/0, process_owner_check/1,
     overlay_missing/0, overlay_missing/1,
     single/0, single/1,
     two/1,
+    empty_group_by_remote_leave/0, empty_group_by_remote_leave/1,
     thundering_herd/0, thundering_herd/1,
     initial/1,
     netsplit/1,
@@ -92,14 +95,14 @@ end_per_testcase(TestCase, _Config) ->
     ok.
 
 all() ->
-    [{group, basic}, {group, cluster}, {group, performance}].
+    [dyn_distribution, {group, basic}, {group, cluster}, {group, performance}].
 
 groups() ->
     [
         {basic, [parallel], [errors, pg, leave_exit_race, single, overlay_missing]},
         {performance, [sequential], [thundering_herd]},
-        {cluster, [parallel], [two, initial, netsplit, trisplit, foursplit,
-            exchange, nolocal, double, scope_restart, missing_scope_join,
+        {cluster, [parallel], [process_owner_check, two, initial, netsplit, trisplit, foursplit,
+            exchange, nolocal, double, scope_restart, missing_scope_join, empty_group_by_remote_leave,
             disconnected_start, forced_sync, group_leave]}
     ].
 
@@ -172,6 +175,42 @@ single(Config) when is_list(Config) ->
     ?assertEqual(ok, pg:leave(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
     ok.
 
+dyn_distribution() ->
+    [{doc, "Tests that local node when distribution is started dynamically is not treated as remote node"}].
+
+dyn_distribution(Config) when is_list(Config) ->
+    %% When distribution is started or stopped dynamically,
+    %%  there is a nodeup/nodedown message delivered to pg
+    %% It is possible but non-trivial to simulate this
+    %%  behaviour with starting slave nodes being not
+    %%  distributed, and calling net_kernel:start/1, however
+    %%  the effect is still the same as simply sending nodeup,
+    %%  which is also documented.
+    ?FUNCTION_NAME ! {nodeup, node()},
+    %%
+    ?assertEqual(ok, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
+    ?assertEqual([self()], pg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    ok.
+
+process_owner_check() ->
+    [{doc, "Tests that process owner is local node"}].
+
+process_owner_check(Config) when is_list(Config) ->
+    {TwoPeer, Socket} = spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
+    %% spawn remote process
+    LocalPid = erlang:spawn(forever()),
+    RemotePid = erlang:spawn(TwoPeer, forever()),
+    %% check they can't be joined locally
+    ?assertException(error, {nolocal, _}, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid)),
+    ?assertException(error, {nolocal, _}, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid, RemotePid])),
+    ?assertException(error, {nolocal, _}, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [LocalPid, RemotePid])),
+    %% check that non-pid also triggers error
+    ?assertException(error, function_clause, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, undefined)),
+    ?assertException(error, {nolocal, _}, pg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [undefined])),
+    %% stop the peer
+    stop_node(TwoPeer, Socket),
+    ok.
+
 overlay_missing() ->
     [{doc, "Tests that scope process that is not a part of overlay network does not change state"}].
 
@@ -232,7 +271,31 @@ two(Config) when is_list(Config) ->
     stop_node(TwoPeer, Socket),
     %% hope that 'nodedown' comes before we route our request
     sync(?FUNCTION_NAME),
+    ok.
+
+empty_group_by_remote_leave() ->
+    [{doc, "Empty group should be deleted from nodes."}].
+
+empty_group_by_remote_leave(Config) when is_list(Config) ->
+    {TwoPeer, Socket} = spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
+    RemoteNode = rpc:call(TwoPeer, erlang, whereis, [?FUNCTION_NAME]),
+    RemotePid = erlang:spawn(TwoPeer, forever()),
+    % remote join
+    ?assertEqual(ok, rpc:call(TwoPeer, pg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
+    sync({?FUNCTION_NAME, TwoPeer}),
+    ?assertEqual([RemotePid], pg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    % inspecting internal state is not best practice, but there's no other way to check if the state is correct.
+    {state, _, _, #{RemoteNode := {_, RemoteMap}}} = sys:get_state(?FUNCTION_NAME),
+    ?assertEqual(#{?FUNCTION_NAME => [RemotePid]}, RemoteMap),
+    % remote leave
+    ?assertEqual(ok, rpc:call(TwoPeer, pg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
+    sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([], pg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    {state, _, _, #{RemoteNode := {_, NewRemoteMap}}} = sys:get_state(?FUNCTION_NAME),
+    % empty group should be deleted.
+    ?assertEqual(#{}, NewRemoteMap),
+
+    stop_node(TwoPeer, Socket),
     ok.
 
 thundering_herd() ->

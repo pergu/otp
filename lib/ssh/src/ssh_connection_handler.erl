@@ -669,8 +669,8 @@ handle_event(_, _Event, {init_error,Error}=StateName, D) ->
 
 %%% ######## {hello, client|server} ####
 %% The very first event that is sent when the we are set as controlling process of Socket
-handle_event(_, socket_control, {hello,_}=StateName, D) ->
-    VsnMsg = ssh_transport:hello_version_msg(string_version(D#data.ssh_params)),
+handle_event(_, socket_control, {hello,_}=StateName, #data{ssh_params = Ssh0} = D) ->
+    VsnMsg = ssh_transport:hello_version_msg(string_version(Ssh0)),
     send_bytes(VsnMsg, D),
     case inet:getopts(Socket=D#data.socket, [recbuf]) of
 	{ok, [{recbuf,Size}]} ->
@@ -681,7 +681,8 @@ handle_event(_, socket_control, {hello,_}=StateName, D) ->
 				  % be max ?MAX_PROTO_VERSION bytes:
 				  {recbuf, ?MAX_PROTO_VERSION},
 				  {nodelay,true}]),
-	    {keep_state, D#data{inet_initial_recbuf_size=Size}};
+            Time = ?GET_OPT(hello_timeout, Ssh0#ssh.opts, infinity),
+	    {keep_state, D#data{inet_initial_recbuf_size=Size}, [{state_timeout,Time,no_hello_received}] };
 
 	Other ->
             ?call_disconnectfun_and_log_cond("Option return", 
@@ -730,6 +731,10 @@ handle_event(_, {version_exchange,Version}, {hello,Role}, D0) ->
 	    {stop, Shutdown, D}
     end;
 
+handle_event(_, no_hello_received, {hello,_Role}=StateName, D0) ->
+    {Shutdown, D} =
+        ?send_disconnect(?SSH_DISCONNECT_PROTOCOL_ERROR, "No HELLO recieved", StateName, D0),
+    {stop, Shutdown, D};
 		  
 %%% ######## {kexinit, client|server, init|renegotiate} ####
 
@@ -1234,12 +1239,20 @@ handle_event(cast, {adjust_window,ChannelId,Bytes}, StateName, D) when ?CONNECTE
 	    keep_state_and_data
     end;
 
-handle_event(cast, {reply_request,success,ChannelId}, StateName, D) when ?CONNECTED(StateName) ->
+handle_event(cast, {reply_request,Resp,ChannelId}, StateName, D) when ?CONNECTED(StateName) ->
     case ssh_client_channel:cache_lookup(cache(D), ChannelId) of
-	#channel{remote_id = RemoteId} ->
-	    Msg = ssh_connection:channel_success_msg(RemoteId),
-	    update_inet_buffers(D#data.socket),
-	    {keep_state, send_msg(Msg,D)};
+        #channel{remote_id = RemoteId} when Resp== success ; Resp==failure ->
+            Msg = 
+                case Resp of
+                    success -> ssh_connection:channel_success_msg(RemoteId);
+                    failure -> ssh_connection:channel_failure_msg(RemoteId)
+                end,
+            update_inet_buffers(D#data.socket),
+            {keep_state, send_msg(Msg,D)};
+
+        #channel{} ->
+            Details = io_lib:format("Unhandled reply in state ~p:~n~p", [StateName,Resp]),
+            ?send_disconnect(?SSH_DISCONNECT_PROTOCOL_ERROR, Details, StateName, D);
 
 	undefined ->
 	    keep_state_and_data
@@ -1766,8 +1779,8 @@ terminate(shutdown, _StateName, D0) ->
                  D0),
     close_transport(D);
 
-terminate(kill, _StateName, D) ->
-    %% Got a kill signal
+terminate(killed, _StateName, D) ->
+    %% Got a killed signal
     stop_subsystem(D),
     close_transport(D);
 
@@ -1865,26 +1878,36 @@ stop_subsystem(#data{ssh_params =
                          #ssh{role = Role},
                      connection_state =
                          #connection{system_supervisor = SysSup,
-                                     sub_system_supervisor = SubSysSup}
+                                     sub_system_supervisor = SubSysSup,
+                                     options = Opts}
                     }) when is_pid(SysSup) andalso is_pid(SubSysSup)  ->
-    process_flag(trap_exit, false),
     C = self(),
     spawn(fun() ->
-                  Mref = erlang:monitor(process, C),
-                  receive
-                      {'DOWN', Mref, process, C, _Info} -> ok
-                  after
-                      10000 -> ok
-                  end,
-                  case Role of
-                      client ->
+                  wait_until_dead(C, 10000),
+                  case {Role, ?GET_INTERNAL_OPT(connected_socket,Opts,non_socket_started)} of
+                      {server, non_socket_started} ->
+                          ssh_system_sup:stop_subsystem(SysSup, SubSysSup);
+                      {client, non_socket_started} ->
                           ssh_system_sup:stop_system(Role, SysSup);
-                      _ ->
-                          ssh_system_sup:stop_subsystem(SysSup, SubSysSup)
+                      {server, _Socket} ->
+                          ssh_system_sup:stop_system(Role, SysSup);
+                      {client, _Socket} ->
+                          ssh_system_sup:stop_subsystem(SysSup, SubSysSup),
+                          wait_until_dead(SubSysSup, 1000),
+                          sshc_sup:stop_system(SysSup)
                   end
           end);
 stop_subsystem(_) ->
     ok.
+
+
+wait_until_dead(Pid, Timeout) ->
+    Mref = erlang:monitor(process, Pid),
+    receive
+        {'DOWN', Mref, process, Pid, _Info} -> ok
+    after
+        Timeout -> ok
+    end.
 
 
 close_transport(#data{transport_cb = Transport,

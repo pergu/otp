@@ -52,7 +52,8 @@
          iter_max_procs/1,
          magic_ref/1,
          dist_entry_gc/1,
-         persistent_term/1]).
+         persistent_term/1,
+         huge_ref/1]).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -65,7 +66,7 @@ all() ->
      node_controller_refc, ets_refc, match_spec_refc,
      timer_refc, pid_wrap, port_wrap, bad_nc,
      unique_pid, iter_max_procs,
-     magic_ref, persistent_term].
+     magic_ref, persistent_term, huge_ref].
 
 init_per_suite(Config) ->
     Config.
@@ -314,6 +315,22 @@ cmp(Config) when is_list(Config) ->
     true = mk_pid({c@b, 1}, 4711, 1) > Pid,
     true = mk_pid({b@b, 3}, 4711, 1) > Pid,
     true = mk_pid({b@b, 2}, 4711, 1) =:= Pid,
+
+    %% Test big external pids (> OTP-24)
+    MaxPidNum = (1 bsl 15) - 1,
+    MaxPidSer = ?MAX_PIDS_PORTS bsr 15,
+    true = mk_pid({b@b, 2}, 4711, MaxPidSer) < mk_pid({a@b, 1}, 4710, MaxPidSer+1),
+    true = mk_pid({b@b, 2}, 4711, MaxPidSer) < mk_pid({a@b, 1}, 4710, (1 bsl 31)),
+    true = mk_pid({b@b, 2}, 4711, MaxPidSer) < mk_pid({a@b, 1}, 4710, (1 bsl 32)-1),
+
+    true = mk_pid({b@b, 2}, MaxPidNum, 17) < mk_pid({a@b, 1}, MaxPidNum+1, 17),
+    true = mk_pid({b@b, 2}, MaxPidNum, 17) < mk_pid({a@b, 1}, (1 bsl 31), 17),
+    true = mk_pid({b@b, 2}, MaxPidNum, 17) < mk_pid({a@b, 1}, (1 bsl 32)-1, 17),
+
+    true = mk_pid({b@b, 2}, 4711, 17) < mk_pid({b@b, 4}, 4711, 17),
+    true = mk_pid({b@b, 2}, 4711, 17) < mk_pid({b@b, (1 bsl 31)}, 4711, 17),
+    true = mk_pid({b@b, 2}, 4711, 17) < mk_pid({b@b, (1 bsl 32)-1}, 4711, 17),
+
 
     %% Test ports ---------------------------------------------------
     %%
@@ -770,10 +787,6 @@ bad_nc(Config) when is_list(Config) ->
     {'EXIT', {badarg, mk_ref, _}}
     = (catch mk_ref(ThisNode, [4711, 4711, 4711, 4711, 4711, 4711, 4711])),
     RemNode = {x@y, 2},
-    {'EXIT', {badarg, mk_pid, _}}
-    = (catch mk_pid(RemNode, MaxPidNum + 1, MaxPidSer)),
-    {'EXIT', {badarg, mk_pid, _}}
-    = (catch mk_pid(RemNode, MaxPidNum, MaxPidSer + 1)),
     {'EXIT', {badarg, mk_port, _}}
     = (catch mk_port(RemNode, ?MAX_PIDS_PORTS + 1)),
     {'EXIT', {badarg, mk_ref, _}}
@@ -787,6 +800,12 @@ bad_nc(Config) when is_list(Config) ->
     = (catch mk_port(BadNode, 4711)),
     {'EXIT', {badarg, mk_ref, _}}
     = (catch mk_ref(BadNode, [4711, 4711, 17])),
+
+    %% OTP 24: External pids can use 32+32 bits
+    mk_pid(RemNode, MaxPidNum + 1, MaxPidSer),
+    mk_pid(RemNode, (1 bsl 32)-1, MaxPidSer),
+    mk_pid(RemNode, MaxPidNum, MaxPidSer + 1),
+    mk_pid(RemNode, MaxPidNum, (1 bsl 32)-1),
     ok.
 
 
@@ -812,9 +831,19 @@ mkpidlist(N, Ps) -> mkpidlist(N-1, [spawn(fun () -> ok end)|Ps]).
 iter_max_procs(Config) when is_list(Config) ->
     NoMoreTests = make_ref(),
     erlang:send_after(10000, self(), NoMoreTests),
-    Res = chk_max_proc_line(),
-    Res = chk_max_proc_line(),
-    done = chk_max_proc_line_until(NoMoreTests, Res),
+
+    %% Disable logging to avoid "Too many processes" log which can
+    %% cause ct_logs to crash when trying to spawn "async print job".
+    #{level := LoggerLevel} = logger:get_primary_config(),
+    ok = logger:set_primary_config(level, none),
+    Res = try
+              R = chk_max_proc_line(),
+              R = chk_max_proc_line(),
+              done = chk_max_proc_line_until(NoMoreTests, R),
+              R
+          after
+              logger:set_primary_config(level, LoggerLevel)
+          end,
     Cmt = io_lib:format("max processes = ~p; "
                         "process line length = ~p",
                         [element(2, Res), element(1, Res)]),
@@ -966,6 +995,14 @@ dist_entry_gc(Config) when is_list(Config) ->
     end,
     unlink(P),
     stop_node(Node),
+    ok.
+
+huge_ref(Config) when is_list(Config) ->
+    {ok, Node} = start_node(get_nodefirstname()),
+    HRef = mk_ref({Node, 4711}, [4711, 705676, 3456, 1000000, 3456]),
+    io:format("HRef=~p~n", [HRef]),
+    HRef = binary_to_term(term_to_binary(HRef)),
+    HRef = erpc:call(Node, fun () -> HRef end),
     ok.
 
 %%

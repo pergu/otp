@@ -24,13 +24,6 @@
 
 #include "wxe_impl.h"
 
-// Until fixed in emulator
-#ifndef _WIN32
-extern "C" {
-  extern void erts_thread_disable_fpe(void);
-}
-#endif
-
 ErlDrvTid wxe_thread;
 
 ErlDrvMutex *wxe_status_m;
@@ -118,7 +111,20 @@ void *wxe_main_loop(void *vpdl)
 {
   int result;
   int  argc = 1;
-  const wxChar temp[10] = L"Erlang";
+  wxChar temp[128] = L"Erlang";
+
+  size_t app_len = 127;
+  char app_title_buf[128];
+  int res = erl_drv_getenv("WX_APP_TITLE", app_title_buf, &app_len);
+  if (res == 0) {
+    wxString title = wxString::FromUTF8(app_title_buf);
+    int size = title.Length() < 127 ? title.Length() : 126;
+    for(int i = 0; i < size; i++) {
+      temp[i] = title[i];
+    }
+    temp[size] = 0;
+  }
+
   wxChar * argv[] = {(wxChar *)temp, NULL};
   ErlDrvPDL pdl = (ErlDrvPDL) vpdl;
 
@@ -126,9 +132,7 @@ void *wxe_main_loop(void *vpdl)
 
   // Disable floating point execption if they are on.
   // This should be done in emulator but it's not in yet.
-#ifndef _WIN32
-  erts_thread_disable_fpe();
-#else
+#ifdef _WIN32
   // Setup that wxWidgets should look for cursors and icons in
   // this dll and not in werl.exe (which is the default)
   HMODULE WXEHandle = GetModuleHandle(_T("wxe_driver"));

@@ -132,7 +132,7 @@ groups() ->
      {http_1_1, [],
       [host, chunked, expect, cgi, cgi_chunked_encoding_test,
        trace, range, if_modified_since, mod_esi_chunk_timeout,
-       esi_put, esi_post, esi_proagate] ++ http_head() ++ http_get() ++ load()},
+       esi_put, esi_patch, esi_post, esi_proagate] ++ http_head() ++ http_get() ++ load()},
      {http_1_0, [], [host, cgi, trace] ++ http_head() ++ http_get() ++ load()},
      {http_rel_path_script_alias, [], [cgi]},
      {not_sup, [], [put_not_sup]}
@@ -444,6 +444,17 @@ get(Config) when is_list(Config) ->
 				       proplists:get_value(node, Config),
 				       http_request("GET /open/ ", Version, Host),
 				       [{statuscode, 403},
+					{header, "Content-Type", "text/html"},
+					{header, "Date"},
+					{header, "Server"},
+					{version, Version}]),
+
+    ok = httpd_test_lib:verify_request(proplists:get_value(type, Config), Host,
+				       proplists:get_value(port, Config),
+				       transport_opts(Type, Config),
+				       proplists:get_value(node, Config),
+				       http_request("GET /.%252e/.%252e/.%252e/.%252e/.%252e/home/ ", Version, Host),
+				       [{statuscode, 404},
 					{header, "Content-Type", "text/html"},
 					{header, "Date"},
 					{header, "Server"},
@@ -855,6 +866,15 @@ esi_put() ->
 esi_put(Config) when is_list(Config) ->
     ok = http_status("PUT /cgi-bin/erl/httpd_example/put/123342234123 ",
 		     Config, [{statuscode, 200}]).
+
+%%-------------------------------------------------------------------------
+esi_patch() ->
+    [{doc, "Test mod_esi PATCH"}].
+
+esi_patch(Config) when is_list(Config) ->
+    ok = http_status("PATCH /cgi-bin/erl/httpd_example/patch/1234567890 ",
+		     Config, [{statuscode, 200}]).
+
 %%-------------------------------------------------------------------------
 esi_post() ->
     [{doc, "Test mod_esi POST"}].

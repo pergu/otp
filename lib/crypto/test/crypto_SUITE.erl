@@ -67,6 +67,8 @@
          compute/1,
          compute_bug/0,
          compute_bug/1,
+         crypto_load/1,
+         crypto_load_and_call/1,
          exor/0,
          exor/1,
          generate/0,
@@ -107,6 +109,7 @@
          no_stream_ivec/1,
          no_support/0,
          no_support/1,
+         node_supports_cache/1,
          poly1305/0,
          poly1305/1,
          private_encrypt/0,
@@ -214,9 +217,12 @@ all() ->
     [app,
      {group, api_errors},
      appup,
+     crypto_load,
+     crypto_load_and_call,
      {group, fips},
      {group, non_fips},
      cipher_padding,
+     node_supports_cache,
      mod_pow,
      exor,
      rand_uniform,
@@ -619,6 +625,58 @@ no_support() ->
 no_support(Config) when is_list(Config) ->
     Type  = ?config(type, Config),
     false = is_supported(Type).
+%%--------------------------------------------------------------------
+crypto_load(_Config) ->
+    (catch crypto:stop()),
+    code:delete(crypto),
+    code:purge(crypto),
+    crypto:start().
+%%--------------------------------------------------------------------
+crypto_load_and_call(_Config) ->
+    (catch crypto:stop()),
+    code:delete(crypto),
+    code:purge(crypto),
+    Key0 = "ablurf123BX#$;3",
+    Bin0 = erlang:md5(<<"whatever">>),
+    {Key,IVec,BlockSize}=make_crypto_key(Key0),
+    crypto:crypto_one_time(des_ede3_cbc, Key, IVec, Bin0, true).
+
+make_crypto_key(String) ->
+    <<K1:8/binary,K2:8/binary>> = First = erlang:md5(String),
+    <<K3:8/binary,IVec:8/binary>> = erlang:md5([First|lists:reverse(String)]),
+    {[K1,K2,K3],IVec,8}.
+%%--------------------------------------------------------------------
+%% Test that a spawned node has initialized the cache
+-define(at_node, 
+        (fun(N, M, F, As) ->
+                 R = rpc:call(N, M, F, As),
+                 ct:log("~p ~p ~p:~p(~s) = ~p", [?LINE,N,M,F,args2list(As), R]),
+                 R
+         end) ).
+args2list(As) -> lists:join(", ", [io_lib:format("~p",[A]) || A <- As]).
+
+node_supports_cache(_Config) ->
+    ECs = crypto:supports(curves),
+    {ok,Node} = start_slave_node(random_node_name(?MODULE)),
+    case ?at_node(Node, crypto, supports, [curves]) of
+        ECs ->
+            test_server:stop_node(Node);
+        OtherECs ->
+            ct:log("At master:~p~nAt slave:~p~n"
+                   "Missing at slave: ~p~nmissing at master: ~p",
+                   [ECs, OtherECs, ECs--OtherECs, OtherECs--ECs]),
+            {fail, "different support at slave"}
+    end.
+
+
+start_slave_node(Name) ->
+    Pa = filename:dirname(code:which(?MODULE)),
+    test_server:start_node(Name, slave, [{args, " -pa " ++ Pa}]).
+
+random_node_name(BaseName) ->
+    L = integer_to_list(erlang:unique_integer([positive])),
+    lists:concat([BaseName,"___",L]).
+
 %%--------------------------------------------------------------------
 hash() ->
     [{doc, "Test all different hash functions"}].

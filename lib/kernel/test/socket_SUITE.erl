@@ -97,6 +97,12 @@
          api_b_sendmsg_and_recvmsg_tcpL/1,
          api_b_sendmsg_and_recvmsg_seqpL/1,
          api_b_sendmsg_and_recvmsg_sctp4/1,
+         api_b_sendmsg_iov_dgram_inet/1,
+         api_b_sendmsg_iov_dgram_inet6/1,
+         api_b_sendmsg_iov_dgram_local/1,
+         api_b_sendmsg_iov_stream_inet/1,
+         api_b_sendmsg_iov_stream_inet6/1,
+         api_b_sendmsg_iov_stream_local/1,
 
          %% *** API socket from FD ***
          api_ffd_open_wod_and_info_udp4/1,
@@ -713,6 +719,7 @@ groups() ->
      {api_basic,                   [], api_basic_cases()},
      {api_from_fd,                 [], api_from_fd_cases()},
      {api_async,                   [], api_async_cases()},
+     {api_async_ref,               [], api_async_cases()},
      {api_options,                 [], api_options_cases()},
      {api_options_otp,             [], api_options_otp_cases()},
      {api_options_socket,          [], api_options_socket_cases()},
@@ -808,6 +815,7 @@ api_cases() ->
      {group, api_misc},
      {group, api_basic},
      {group, api_async},
+     {group, api_async_ref},
      {group, api_options},
      {group, api_op_with_timeout}
     ].
@@ -843,7 +851,13 @@ api_basic_cases() ->
      api_b_sendmsg_and_recvmsg_tcp4,
      api_b_sendmsg_and_recvmsg_tcpL,
      api_b_sendmsg_and_recvmsg_seqpL,
-     api_b_sendmsg_and_recvmsg_sctp4
+     api_b_sendmsg_and_recvmsg_sctp4,
+     api_b_sendmsg_iov_dgram_inet,
+     api_b_sendmsg_iov_dgram_inet6,
+     api_b_sendmsg_iov_dgram_local,
+     api_b_sendmsg_iov_stream_inet,
+     api_b_sendmsg_iov_stream_inet6,
+     api_b_sendmsg_iov_stream_local
     ].
 
 api_from_fd_cases() ->
@@ -1973,6 +1987,8 @@ init_per_group(ttest = _GroupName, Config) ->
         false ->
             [{esock_test_ttest_runtime, which_ttest_runtime_env()} | Config]
     end;
+init_per_group(api_async_ref, Config) ->
+    [{select_handle, true} | Config];
 init_per_group(_GroupName, Config) ->
     Config.
 
@@ -1982,6 +1998,8 @@ end_per_group(ttest = _GroupName, Config) ->
               "~n", [_GroupName, Config]),
     ttest_manager_stop(),
     lists:keydelete(esock_test_ttest_runtime, 1, Config);
+end_per_group(api_async_ref, Config) ->
+    lists:keydelete(select_handle, 1, Config);
 end_per_group(_GroupName, Config) ->
     Config.
 
@@ -2469,7 +2487,7 @@ api_b_open_and_close(InitState) ->
                       ({#{domain := ExpDomain}, {ok, Domain}}) ->
                            {error, {unexpected_domain, ExpDomain, Domain}};
                       %% Some platforms do not support this option
-                      ({S, {error, invalid} = ERROR}) ->
+                      ({S, {error, {invalid, _}} = ERROR}) ->
                            case
                                socket:is_supported(options, socket, domain)
                            of
@@ -2520,7 +2538,7 @@ api_b_open_and_close(InitState) ->
 					    ExpProtocol, Protocol}}
 			   end;
                       %% Some platforms do not support this option
-                      ({State, {error, invalid} = ERROR}) ->
+                      ({State, {error, {invalid, _}} = ERROR}) ->
 			   case socket:is_supported(options, socket, protocol) of
 			       true ->
                                    ERROR;
@@ -2705,18 +2723,18 @@ api_b_sendmsg_and_recvmsg_udp4(_Config) when is_list(_Config) ->
                    Send = fun(Sock, Data, Dest) ->
                                   %% We need tests for this,
                                   %% but this is not the place it.
-                                  %% CMsgHdr  = #{level => ip,
+                                  %% CMsg  = #{level => ip,
                                   %%              type  => tos,
                                   %%              data  => reliability},
-                                  %% CMsgHdrs = [CMsgHdr],
-                                  MsgHdr = #{addr => Dest,
-                                             %% ctrl => CMsgHdrs,
+                                  %% CMsgs = [CMsg],
+                                  Msg = #{addr => Dest,
+                                             %% ctrl => CMsgs,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
-                                  %% We have some issues on old darwing...
-                                  %% socket:setopt(Sock, otp, debug, true),
+                                  %% We have some issues on old darwin...
+                                  %% ok = socket:setopt(Sock, {otp,debug}, true),
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr  := Source,
                                              iov   := [Data]}} ->
@@ -2753,14 +2771,14 @@ api_b_sendmsg_and_recvmsg_udpL(_Config) when is_list(_Config) ->
                    Send = fun(Sock, Data, Dest) ->
                                   %% We need tests for this,
                                   %% but this is not the place it.
-                                  %% CMsgHdr  = #{level => ip,
+                                  %% CMsg  = #{level => ip,
                                   %%              type  => tos,
                                   %%              data  => reliability},
-                                  %% CMsgHdrs = [CMsgHdr],
-                                  MsgHdr = #{addr => Dest,
-                                             %% ctrl => CMsgHdrs,
+                                  %% CMsgs = [CMsg],
+                                  Msg = #{addr => Dest,
+                                             %% ctrl => CMsgs,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   %% We have some issues on old darwing...
@@ -2809,7 +2827,8 @@ api_b_send_and_recv_udp(InitState) ->
          #{desc => "bind src socket",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("src bound (to ~p)", [Port]),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -2834,7 +2853,8 @@ api_b_send_and_recv_udp(InitState) ->
          #{desc => "bind dst socket",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("src bound (to ~p)", [Port]),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -3016,14 +3036,17 @@ api_b_sendmsg_and_recvmsg_tcp4(_Config) when is_list(_Config) ->
     tc_try(api_b_sendmsg_and_recvmsg_tcp4,
            fun() ->
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
-                                      {ok, #{addr  := undefined,
-                                             iov   := [Data]}} ->
+                                      {ok, #{addr  := _} = Addr} ->
+                                          {error, {addr, Addr}};
+                                      {ok, #{iov   := [Data]}} ->
                                           {ok, Data};
+                                      {ok, Msg} ->
+                                          {error, {msg, Msg}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -3051,16 +3074,11 @@ api_b_sendmsg_and_recvmsg_tcpL(_Config) when is_list(_Config) ->
            fun() -> has_support_unix_domain_socket() end,
            fun() ->
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
-                                      %% On some platforms, the address
-                                      %% is *not* provided (e.g. FreeBSD)
-                                      {ok, #{addr  := undefined,
-                                             iov   := [Data]}} ->
-                                          {ok, Data};
                                       %% On some platforms, the address
                                       %% *is* provided (e.g. linux)
                                       {ok, #{addr  := #{family := local},
@@ -3070,6 +3088,14 @@ api_b_sendmsg_and_recvmsg_tcpL(_Config) when is_list(_Config) ->
                                                         debug, 
                                                         false),
                                           {ok, Data};
+                                      {ok, #{addr := _} = Msg} ->
+                                          {error, {msg, Msg}};
+                                      %% On some platforms, the address
+                                      %% is *not* provided (e.g. FreeBSD)
+                                      {ok, #{iov   := [Data]}} ->
+                                          {ok, Data};
+                                      {ok, Msg} ->
+                                          {error, {msg, Msg}};
                                       {error, _} = ERROR ->
                                           socket:setopt(Sock, 
                                                         otp, 
@@ -3102,18 +3128,12 @@ api_b_sendmsg_and_recvmsg_seqpL(_Config) when is_list(_Config) ->
            fun() ->
                    Send =
                        fun(Sock, Data) ->
-                               MsgHdr =
+                               Msg =
                                    #{iov => [Data]},
-                               socket:sendmsg(Sock, MsgHdr)
+                               socket:sendmsg(Sock, Msg)
                        end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
-                                      %% On some platforms, the address
-                                      %% is *not* provided (e.g. FreeBSD)
-                                      {ok,
-                                       #{addr  := undefined,
-                                         iov   := [Data]}} ->
-                                          {ok, Data};
                                       %% On some platforms, the address
                                       %% *is* provided (e.g. linux)
                                       {ok,
@@ -3122,6 +3142,15 @@ api_b_sendmsg_and_recvmsg_seqpL(_Config) when is_list(_Config) ->
                                           socket:setopt(
                                             Sock, otp, debug, false),
                                           {ok, Data};
+                                      {ok, #{addr := _} = Msg} ->
+                                          {error, {msg, Msg}};
+                                      %% On some platforms, the address
+                                      %% is *not* provided (e.g. FreeBSD)
+                                      {ok,
+                                       #{iov   := [Data]}} ->
+                                          {ok, Data};
+                                      {ok, Msg} ->
+                                          {error, {msg, Msg}};
                                       {error, _} = ERROR ->
                                           socket:setopt(
                                             Sock, otp, debug, false),
@@ -3180,14 +3209,16 @@ api_b_send_and_recv_conn(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
-                                   ok; % We do not care about the port for local
+                               ok ->
+                                   %% We do not care about the port for local
+                                   ok;
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -3340,7 +3371,7 @@ api_b_send_and_recv_conn(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -3567,13 +3598,13 @@ api_b_sendmsg_and_recvmsg_sctp4(_Config) when is_list(_Config) ->
 	   end,
            fun() ->
                    Send = fun(Sock, Data) ->
-                                  %% CMsgHdr  = #{level => sctp,
+                                  %% CMsg  = #{level => sctp,
                                   %%              type  => tos,
                                   %%              data  => reliability},
-                                  %% CMsgHdrs = [CMsgHdr],
-                                  MsgHdr = #{%% ctrl => CMsgHdrs,
+                                  %% CMsgs = [CMsg],
+                                  Msg = #{%% ctrl => CMsgs,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   %% We have some issues on old darwing...
@@ -3617,7 +3648,7 @@ api_b_send_and_recv_sctp(_InitState) ->
 %%          #{desc => "bind src",
 %%            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
 %%                            case socket:bind(Sock, LSA) of
-%%                                {ok, _Port} ->
+%%                                ok ->
 %%                                    ?SEV_IPRINT("src bound"),
 %%                                    ok;
 %%                                {error, Reason} = ERROR ->
@@ -3642,7 +3673,7 @@ api_b_send_and_recv_sctp(_InitState) ->
 %%          #{desc => "bind dst",
 %%            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
 %%                            case socket:bind(Sock, LSA) of
-%%                                {ok, _Port} ->
+%%                                ok ->
 %%                                    ?SEV_IPRINT("src bound"),
 %%                                    ok;
 %%                                {error, Reason} = ERROR ->
@@ -3742,7 +3773,8 @@ api_b_send_and_recv_sctp(_InitState) ->
 %%          #{desc => "bind to local address",
 %%            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
 %%                            case socket:bind(LSock, LSA) of
-%%                                {ok, Port} ->
+%%                                ok ->
+%%                                    Port = sock_port(LSock),
 %%                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
 %%                                    {ok, State#{lport => Port}};
 %%                                {error, _} = ERROR ->
@@ -3879,7 +3911,7 @@ api_b_send_and_recv_sctp(_InitState) ->
 %%          #{desc => "bind to local address",
 %%            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
 %%                            case socket:bind(Sock, LSA) of
-%%                                {ok, _Port} ->
+%%                                ok ->
 %%                                    ok;
 %%                                {error, _} = ERROR ->
 %%                                    ERROR
@@ -4086,6 +4118,109 @@ api_b_send_and_recv_sctp(_InitState) ->
 
     ok.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                     %%
+%%                           API IOV                                   %%
+%%                                                                     %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+api_b_sendmsg_iov_dgram_inet(Config) when is_list(Config) ->
+    api_b_sendmsg_iov_dgram(inet).
+%%
+api_b_sendmsg_iov_dgram_inet6(Config) when is_list(Config) ->
+    has_support_ipv6(),
+    api_b_sendmsg_iov_dgram(inet6).
+%%
+api_b_sendmsg_iov_dgram_local(Config) when is_list(Config) ->
+    has_support_unix_domain_socket(),
+    api_b_sendmsg_iov_dgram(local).
+
+api_b_sendmsg_iov_stream_inet(Config) when is_list(Config) ->
+    api_b_sendmsg_iov_stream(inet).
+%%
+api_b_sendmsg_iov_stream_inet6(Config) when is_list(Config) ->
+    has_support_ipv6(),
+    api_b_sendmsg_iov_stream(inet6).
+%%
+api_b_sendmsg_iov_stream_local(Config) when is_list(Config) ->
+    has_support_unix_domain_socket(),
+    api_b_sendmsg_iov_stream(local).
+
+
+api_b_sendmsg_iov_dgram(Domain) ->
+    ?TT(?SECS(5)),
+    #{iov_max := IOVMax} = socket:info(),
+    IOV =
+        lists:map(
+          fun (N) -> <<(rand:uniform(N) - 1)>> end,
+          lists:duplicate(IOVMax, 256)),
+    IOVTooLarge = IOV ++ IOV,
+    Data = erlang:iolist_to_binary(IOV),
+    {ok, Sa} = socket:open(Domain, dgram),
+    try
+        {ok, Sb} = socket:open(Domain, dgram),
+        try
+            ok = socket:bind(Sa, which_local_socket_addr(Domain)),
+            ok = socket:bind(Sb, which_local_socket_addr(Domain)),
+            {ok, Aa} = socket:sockname(Sa),
+            {ok, Ab} = socket:sockname(Sb),
+            %%
+            ok = socket:sendmsg(Sa, #{addr => Ab, iov => IOV}),
+            {ok, {Aa, Data}} = socket:recvfrom(Sb),
+            %%
+            {error, {invalid, _}} =
+                socket:sendmsg(Sb, #{addr => Aa, iov => IOVTooLarge}),
+            ok
+        after
+            socket:close(Sb)
+        end
+    after
+        socket:close(Sa)
+    end.
+
+api_b_sendmsg_iov_stream(Domain) ->
+    ?TT(?SECS(5)),
+    #{iov_max := IOVMax} = socket:info(),
+    IOV =
+        lists:map(
+          fun (N) -> <<(rand:uniform(N) - 1)>> end,
+          lists:duplicate(IOVMax, 256)),
+    IOVTooLarge = IOV ++ IOV,
+    Data = erlang:iolist_to_binary(IOV),
+    DataTooLarge = erlang:iolist_to_binary(IOVTooLarge),
+    {ok, Sa} = socket:open(Domain, stream),
+    try
+        {ok, Sb} = socket:open(Domain, stream),
+        try
+            ok = socket:bind(Sb, which_local_socket_addr(Domain)),
+            {ok, Ab} = socket:sockname(Sb),
+            ok = socket:listen(Sb),
+            ok = socket:connect(Sa, Ab),
+            {ok, Aa} = socket:sockname(Sa),
+            {ok, Ab} = socket:peername(Sa),
+            {ok, Sc} = socket:accept(Sb),
+            try
+                {ok, Ab} = socket:sockname(Sc),
+                {ok, Aa} = socket:peername(Sc),
+                %%
+                ok = socket:sendmsg(Sa, #{iov => IOV}),
+                {ok, Data} =
+                    socket:recv(Sc, byte_size(Data)),
+                ok = socket:sendmsg(Sc, #{iov => IOVTooLarge}),
+                {ok, DataTooLarge} =
+                    socket:recv(Sa, byte_size(DataTooLarge)),
+                ok
+            after
+                socket:close(Sc)
+            end
+        after
+            socket:close(Sb)
+        end
+    after
+        socket:close(Sa)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -4644,7 +4779,8 @@ api_ffd_open_and_open_and_send_udp2(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{port => Port}};
                                {error, _} = ERROR ->
@@ -4802,7 +4938,7 @@ api_ffd_open_and_open_and_send_udp2(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -5365,7 +5501,8 @@ api_ffd_open_connect_and_open_and_send_tcp2(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -5552,7 +5689,7 @@ api_ffd_open_connect_and_open_and_send_tcp2(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -5979,11 +6116,11 @@ api_a_connect_tcp4(suite) ->
     [];
 api_a_connect_tcp4(doc) ->
     [];
-api_a_connect_tcp4(_Config) when is_list(_Config) ->
+api_a_connect_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
     tc_try(api_a_connect_tcp4,
            fun() ->
-                   ok = api_a_connect_tcpD(inet)
+                   ok = api_a_connect_tcpD(inet, nowait(Config))
            end).
 
 
@@ -5995,20 +6132,20 @@ api_a_connect_tcp6(suite) ->
     [];
 api_a_connect_tcp6(doc) ->
     [];
-api_a_connect_tcp6(_Config) when is_list(_Config) ->
+api_a_connect_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
     tc_try(api_a_connect_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
-                   ok = api_a_connect_tcpD(inet6)
+                   ok = api_a_connect_tcpD(inet6, nowait(Config))
            end).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-api_a_connect_tcpD(Domain) ->
+api_a_connect_tcpD(Domain, Nowait) ->
     Connect = fun(Sock, SockAddr) ->
-                      socket:connect(Sock, SockAddr, nowait)
+                      socket:connect(Sock, SockAddr, Nowait)
               end,
     Send = fun(Sock, Data) ->
                    socket:send(Sock, Data)
@@ -6016,10 +6153,11 @@ api_a_connect_tcpD(Domain) ->
     Recv = fun(Sock) ->
                    socket:recv(Sock)
            end,
-    InitState = #{domain  => Domain,
+    InitState = #{domain => Domain,
                   connect => Connect,
-                  send    => Send,
-                  recv    => Recv},
+                  send => Send,
+                  recv => Recv,
+                  connect_sref => Nowait},
     api_a_connect_tcp(InitState).
 
 
@@ -6059,7 +6197,8 @@ api_a_connect_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -6191,7 +6330,7 @@ api_a_connect_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -6209,21 +6348,30 @@ api_a_connect_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, async_connect)
                    end},
          #{desc => "connect (async) to server",
-           cmd  => fun(#{sock      := Sock,
+           cmd  => fun(#{sock := Sock,
                          server_sa := SSA,
-                         connect   := Connect} = State) ->
+                         connect := Connect,
+                         connect_sref := SR} = State) ->
                            case Connect(Sock, SSA) of
                                ok ->
                                    ?SEV_IPRINT("ok -> "
 					       "unexpected success => SKIP", 
                                                []),
                                    {skip, unexpected_success};
-                               {select, {select_info, ST, SR}} ->
-                                   ?SEV_IPRINT("select ->"
+                               {select, {select_info, ST, SelectRef}}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("select nowait ->"
+                                               "~n   tag: ~p"
+                                               "~n   ref: ~p",
+                                               [ST, SelectRef]),
+                                   {ok, State#{connect_stag => ST,
+                                               connect_sref => SelectRef}};
+                               {select, {select_info, ST, SR}}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("select ref ->"
                                                "~n   tag: ~p"
                                                "~n   ref: ~p", [ST, SR]),
-                                   {ok, State#{connect_stag => ST,
-                                               connect_sref => SR}};
+                                   {ok, State#{connect_stag => ST}};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -6504,19 +6652,21 @@ api_a_sendto_and_recvfrom_udp4(suite) ->
     [];
 api_a_sendto_and_recvfrom_udp4(doc) ->
     [];
-api_a_sendto_and_recvfrom_udp4(_Config) when is_list(_Config) ->
+api_a_sendto_and_recvfrom_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendto_and_recvfrom_udp4,
            fun() ->
                    Send = fun(Sock, Data, Dest) ->
                                   socket:sendto(Sock, Data, Dest)
                           end,
                    Recv = fun(Sock) ->
-                                  socket:recvfrom(Sock, 0, nowait)
+                                  socket:recvfrom(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 send   => Send,
-                                 recv   => Recv},
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_send_and_recv_udp(InitState)
            end).
 
@@ -6534,8 +6684,9 @@ api_a_sendto_and_recvfrom_udp6(suite) ->
     [];
 api_a_sendto_and_recvfrom_udp6(doc) ->
     [];
-api_a_sendto_and_recvfrom_udp6(_Config) when is_list(_Config) ->
+api_a_sendto_and_recvfrom_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendto_and_recvfrom_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
@@ -6543,11 +6694,12 @@ api_a_sendto_and_recvfrom_udp6(_Config) when is_list(_Config) ->
                                   socket:sendto(Sock, Data, Dest)
                           end,
                    Recv = fun(Sock) ->
-                                  socket:recvfrom(Sock, 0, nowait)
+                                  socket:recvfrom(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 send   => Send,
-                                 recv   => Recv},
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_send_and_recv_udp(InitState)
            end).
 
@@ -6565,18 +6717,19 @@ api_a_sendmsg_and_recvmsg_udp4(suite) ->
     [];
 api_a_sendmsg_and_recvmsg_udp4(doc) ->
     [];
-api_a_sendmsg_and_recvmsg_udp4(_Config) when is_list(_Config) ->
+api_a_sendmsg_and_recvmsg_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendmsg_and_recvmsg_udp4,
            fun() ->
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
-                                             %% ctrl => CMsgHdrs,
+                                  Msg = #{addr => Dest,
+                                             %% ctrl => CMsgs,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, #{addr  := Source,
                                              iov   := [Data]}} ->
                                           {ok, {Source, Data}};
@@ -6589,8 +6742,9 @@ api_a_sendmsg_and_recvmsg_udp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 send   => Send,
-                                 recv   => Recv},
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_send_and_recv_udp(InitState)
            end).
 
@@ -6608,19 +6762,20 @@ api_a_sendmsg_and_recvmsg_udp6(suite) ->
     [];
 api_a_sendmsg_and_recvmsg_udp6(doc) ->
     [];
-api_a_sendmsg_and_recvmsg_udp6(_Config) when is_list(_Config) ->
+api_a_sendmsg_and_recvmsg_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendmsg_and_recvmsg_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
-                                             %% ctrl => CMsgHdrs,
+                                  Msg = #{addr => Dest,
+                                             %% ctrl => CMsgs,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, #{addr  := Source,
                                              iov   := [Data]}} ->
                                           {ok, {Source, Data}};
@@ -6633,8 +6788,9 @@ api_a_sendmsg_and_recvmsg_udp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 send   => Send,
-                                 recv   => Recv},
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_send_and_recv_udp(InitState)
            end).
 
@@ -6675,7 +6831,8 @@ api_a_send_and_recv_udp(InitState) ->
          #{desc => "bind socket (to local address)",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    {ok, State#{port => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -6694,14 +6851,23 @@ api_a_send_and_recv_udp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, Tag, RecvRef}} ->
-                                   ?SEV_IPRINT("expected select: "
+                               {select, {select_info, Tag, RecvRef}}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("expected select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [Tag, RecvRef]),
                                    {ok, State#{recv_stag => Tag,
                                                recv_sref => RecvRef}};
+                               {select, {select_info, Tag, SR}}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("expected select ref: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [Tag, SR]),
+                                   {ok, State#{recv_stag => Tag}};
                                {ok, X} ->
                                    {error, {unexpected_succes, X}};
                                {error, _} = ERROR ->
@@ -6812,7 +6978,7 @@ api_a_send_and_recv_udp(InitState) ->
          #{desc => "bind socket (to local address)",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                           case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -6843,11 +7009,17 @@ api_a_send_and_recv_udp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv reply (with nowait)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, Tag, RecvRef}} ->
+                               {select, {select_info, Tag, RecvRef}}
+                                 when SR =:= nowait ->
                                    {ok, State#{recv_stag => Tag,
                                                recv_sref => RecvRef}};
+                               {select, {select_info, Tag, SR}}
+                                 when is_reference(SR) ->
+                                   {ok, State#{recv_stag => Tag}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -7071,20 +7243,22 @@ api_a_send_and_recv_tcp4(suite) ->
     [];
 api_a_send_and_recv_tcp4(doc) ->
     [];
-api_a_send_and_recv_tcp4(_Config) when is_list(_Config) ->
+api_a_send_and_recv_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_send_and_recv_tcp4,
            fun() ->
                    Send = fun(Sock, Data) ->
                                   socket:send(Sock, Data)
                           end,
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 send   => Send,
-                                 recv   => Recv},
-                   ok = api_a_send_and_recv_tcp(InitState)
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
+                   ok = api_a_send_and_recv_tcp(Config, InitState)
            end).
 
 
@@ -7101,8 +7275,9 @@ api_a_send_and_recv_tcp6(suite) ->
     [];
 api_a_send_and_recv_tcp6(doc) ->
     [];
-api_a_send_and_recv_tcp6(_Config) when is_list(_Config) ->
+api_a_send_and_recv_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_send_and_recv_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
@@ -7110,12 +7285,13 @@ api_a_send_and_recv_tcp6(_Config) when is_list(_Config) ->
                                   socket:send(Sock, Data)
                           end,
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 send   => Send,
-                                 recv   => Recv},
-                   ok = api_a_send_and_recv_tcp(InitState)
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
+                   ok = api_a_send_and_recv_tcp(Config, InitState)
            end).
 
 
@@ -7132,21 +7308,19 @@ api_a_sendmsg_and_recvmsg_tcp4(suite) ->
     [];
 api_a_sendmsg_and_recvmsg_tcp4(doc) ->
     [];
-api_a_sendmsg_and_recvmsg_tcp4(_Config) when is_list(_Config) ->
+api_a_sendmsg_and_recvmsg_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendmsg_and_recvmsg_tcp4,
            fun() ->
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
-                                      {ok, #{addr  := undefined,
-                                             iov   := [Data]}} ->
+                                  case socket:recvmsg(Sock, Nowait) of
+                                      {ok, #{iov   := [Data]}} ->
                                           {ok, Data};
-                                      {ok, _} = OK ->
-                                          OK;
                                       {select, _} = SELECT ->
                                           SELECT;
 				      {error, _} = ERROR ->
@@ -7154,9 +7328,10 @@ api_a_sendmsg_and_recvmsg_tcp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 send   => Send,
-                                 recv   => Recv},
-                   ok = api_a_send_and_recv_tcp(InitState)
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
+                   ok = api_a_send_and_recv_tcp(Config, InitState)
            end).
 
 
@@ -7173,22 +7348,20 @@ api_a_sendmsg_and_recvmsg_tcp6(suite) ->
     [];
 api_a_sendmsg_and_recvmsg_tcp6(doc) ->
     [];
-api_a_sendmsg_and_recvmsg_tcp6(_Config) when is_list(_Config) ->
+api_a_sendmsg_and_recvmsg_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_sendmsg_and_recvmsg_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
-                                      {ok, #{addr  := undefined,
-                                             iov   := [Data]}} ->
+                                  case socket:recvmsg(Sock, Nowait) of
+                                      {ok, #{iov   := [Data]}} ->
                                           {ok, Data};
-                                      {ok, _} = OK ->
-                                          OK;
                                       {select, _} = SELECT ->
                                           SELECT;
 				      {error, _} = ERROR ->
@@ -7196,16 +7369,17 @@ api_a_sendmsg_and_recvmsg_tcp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 send   => Send,
-                                 recv   => Recv},
-                   ok = api_a_send_and_recv_tcp(InitState)
+                                 send => Send,
+                                 recv => Recv,
+                                 recv_sref => Nowait},
+                   ok = api_a_send_and_recv_tcp(Config, InitState)
            end).
 
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-api_a_send_and_recv_tcp(InitState) ->
+api_a_send_and_recv_tcp(Config, InitState) ->
     process_flag(trap_exit, true),
     ServerSeq = 
         [
@@ -7239,7 +7413,8 @@ api_a_send_and_recv_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -7262,13 +7437,22 @@ api_a_send_and_recv_tcp(InitState) ->
                    end},
          #{desc => "await connection (nowait)",
            cmd  => fun(#{lsock := LSock} = State) ->
-                           case socket:accept(LSock, nowait) of
-                               {select, {select_info, Tag, Ref}} ->
-                                   ?SEV_IPRINT("accept select: "
+                           Nowait = nowait(Config),
+                           case socket:accept(LSock, Nowait) of
+                               {select, {select_info, Tag, Ref}}
+                                 when Nowait =:= nowait ->
+                                   ?SEV_IPRINT("accept select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [Tag, Ref]),
                                    {ok, State#{accept_stag => Tag,
                                                accept_sref => Ref}};
+                               {select, {select_info, Tag, Nowait}}
+                                 when is_reference(Nowait) ->
+                                   ?SEV_IPRINT("accept select ref: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [Tag, Nowait]),
+                                   {ok, State#{accept_stag => Tag,
+                                               accept_sref => Nowait}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -7314,14 +7498,23 @@ api_a_send_and_recv_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv_req)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{csock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{csock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, Tag, Ref}} ->
-                                   ?SEV_IPRINT("recv select: "
+                               {select, {select_info, Tag, Ref}}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("recv select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [Tag, Ref]),
                                    {ok, State#{recv_stag => Tag,
                                                recv_sref => Ref}};
+                               {select, {select_info, Tag, SR}}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("recv select ref: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [Tag, SR]),
+                                   {ok, State#{recv_stag => Tag}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -7431,7 +7624,7 @@ api_a_send_and_recv_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -7473,14 +7666,23 @@ api_a_send_and_recv_tcp(InitState) ->
                    end},
 
          #{desc => "try recv reply (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, Tag, Ref}} ->
-                                   ?SEV_IPRINT("recv select: "
+                               {select, {select_info, Tag, Ref}}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("recv select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [Tag, Ref]),
                                    {ok, State#{recv_stag => Tag,
                                                recv_sref => Ref}};
+                               {select, {select_info, Tag, SR}}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("recv select ref: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [Tag, SR]),
+                                   {ok, State#{recv_stag => Tag}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -7709,12 +7911,13 @@ api_a_recvfrom_cancel_udp4(suite) ->
     [];
 api_a_recvfrom_cancel_udp4(doc) ->
     [];
-api_a_recvfrom_cancel_udp4(_Config) when is_list(_Config) ->
+api_a_recvfrom_cancel_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvfrom_cancel_udp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvfrom(Sock, 0, nowait) of
+                                  case socket:recvfrom(Sock, 0, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -7724,7 +7927,8 @@ api_a_recvfrom_cancel_udp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_udp(InitState)
            end).
 
@@ -7739,13 +7943,14 @@ api_a_recvfrom_cancel_udp6(suite) ->
     [];
 api_a_recvfrom_cancel_udp6(doc) ->
     [];
-api_a_recvfrom_cancel_udp6(_Config) when is_list(_Config) ->
+api_a_recvfrom_cancel_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvfrom_cancel_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvfrom(Sock, 0, nowait) of
+                                  case socket:recvfrom(Sock, 0, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -7755,7 +7960,8 @@ api_a_recvfrom_cancel_udp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_udp(InitState)
            end).
 
@@ -7770,12 +7976,13 @@ api_a_recvmsg_cancel_udp4(suite) ->
     [];
 api_a_recvmsg_cancel_udp4(doc) ->
     [];
-api_a_recvmsg_cancel_udp4(_Config) when is_list(_Config) ->
+api_a_recvmsg_cancel_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvmsg_cancel_udp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -7785,7 +7992,8 @@ api_a_recvmsg_cancel_udp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_udp(InitState)
            end).
 
@@ -7800,13 +8008,14 @@ api_a_recvmsg_cancel_udp6(suite) ->
     [];
 api_a_recvmsg_cancel_udp6(doc) ->
     [];
-api_a_recvmsg_cancel_udp6(_Config) when is_list(_Config) ->
+api_a_recvmsg_cancel_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvmsg_cancel_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -7816,7 +8025,8 @@ api_a_recvmsg_cancel_udp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_udp(InitState)
            end).
 
@@ -7857,7 +8067,8 @@ api_a_recv_cancel_udp(InitState) ->
          #{desc => "bind socket (to local address)",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    {ok, State#{port => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -7876,9 +8087,15 @@ api_a_recv_cancel_udp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, SelectInfo} ->
+                               {select, SelectInfo} when SR =:= nowait ->
+                                   {ok, State#{recv_select_info => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SR} = SelectInfo}
+                                 when is_reference(SR) ->
                                    {ok, State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
@@ -8035,12 +8252,13 @@ api_a_accept_cancel_tcp4(suite) ->
     [];
 api_a_accept_cancel_tcp4(doc) ->
     [];
-api_a_accept_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_accept_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_accept_cancel_tcp4,
            fun() ->
                    Accept = fun(Sock) ->
-                                    case socket:accept(Sock, nowait) of
+                                    case socket:accept(Sock, Nowait) of
                                         {ok, _} = OK ->
                                             OK;
                                         {select, _} = SELECT ->
@@ -8050,7 +8268,8 @@ api_a_accept_cancel_tcp4(_Config) when is_list(_Config) ->
                                     end
                             end,
                    InitState = #{domain => inet,
-                                 accept => Accept},
+                                 accept => Accept,
+                                 accept_sref => Nowait},
                    ok = api_a_accept_cancel_tcp(InitState)
            end).
 
@@ -8066,13 +8285,14 @@ api_a_accept_cancel_tcp6(suite) ->
     [];
 api_a_accept_cancel_tcp6(doc) ->
     [];
-api_a_accept_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_accept_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_accept_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Accept = fun(Sock) ->
-                                    case socket:accept(Sock, nowait) of
+                                    case socket:accept(Sock, Nowait) of
                                         {ok, _} = OK ->
                                             OK;
                                         {select, _} = SELECT ->
@@ -8082,7 +8302,8 @@ api_a_accept_cancel_tcp6(_Config) when is_list(_Config) ->
                                     end
                             end,
                    InitState = #{domain => inet6,
-                                 accept => Accept},
+                                 accept => Accept,
+                                 accept_sref => Nowait},
                    ok = api_a_accept_cancel_tcp(InitState)
            end).
 
@@ -8125,7 +8346,8 @@ api_a_accept_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -8147,13 +8369,26 @@ api_a_accept_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, accept)
                    end},
          #{desc => "await connection (nowait)",
-           cmd  => fun(#{lsock := LSock, accept := Accept} = State) ->
+           cmd  => fun(#{lsock := LSock,
+                         accept := Accept,
+                         accept_sref := SR} = State) ->
                            case Accept(LSock) of
-                               {select, {select_info, T, R} = SelectInfo} ->
-                                   ?SEV_IPRINT("accept select: "
+                               {select, {select_info, T, R} = SelectInfo}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("accept select nowait: "
                                                "~n   T: ~p"
                                                "~n   R: ~p", [T, R]),
-                                   {ok, State#{accept_select_info => SelectInfo}};
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
+                               {select, {select_info, T, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("accept select ref: "
+                                               "~n   T: ~p"
+                                               "~n   R: ~p", [T, SR]),
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -8297,15 +8532,17 @@ api_a_recv_cancel_tcp4(suite) ->
     [];
 api_a_recv_cancel_tcp4(doc) ->
     [];
-api_a_recv_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_recv_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recv_cancel_tcp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_tcp(InitState)
            end).
 
@@ -8320,16 +8557,18 @@ api_a_recv_cancel_tcp6(suite) ->
     [];
 api_a_recv_cancel_tcp6(doc) ->
     [];
-api_a_recv_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_recv_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recv_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_tcp(InitState)
            end).
 
@@ -8344,15 +8583,17 @@ api_a_recvmsg_cancel_tcp4(suite) ->
     [];
 api_a_recvmsg_cancel_tcp4(doc) ->
     [];
-api_a_recvmsg_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_recvmsg_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvmsg_cancel_tcp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recvmsg(Sock, nowait)
+                                  socket:recvmsg(Sock, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_tcp(InitState)
            end).
 
@@ -8367,16 +8608,18 @@ api_a_recvmsg_cancel_tcp6(suite) ->
     [];
 api_a_recvmsg_cancel_tcp6(doc) ->
     [];
-api_a_recvmsg_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_recvmsg_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(10)),
+    Nowait = nowait(Config),
     tc_try(api_a_recvmsg_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recvmsg(Sock, nowait)
+                                  socket:recvmsg(Sock, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_recv_cancel_tcp(InitState)
            end).
 
@@ -8418,7 +8661,8 @@ api_a_recv_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -8439,7 +8683,7 @@ api_a_recv_cancel_tcp(InitState) ->
            cmd  => fun(#{tester := Tester}) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, accept)
                    end},
-         #{desc => "await connection (nowait)",
+         #{desc => "await connection",
            cmd  => fun(#{lsock := LSock} = State) ->
                            case socket:accept(LSock) of
                                {ok, CSock} ->
@@ -8459,13 +8703,24 @@ api_a_recv_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{csock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{csock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, T, R} = SelectInfo} ->
-                                   ?SEV_IPRINT("recv select: "
+                               {select, {select_info, T, R} = SelectInfo}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("recv select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [T, R]),
-                                   {ok, State#{recv_select_info => SelectInfo}};
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
+                               {select, {select_info, T, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("recv select ref: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [T, SR]),
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -8562,7 +8817,7 @@ api_a_recv_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -8743,12 +8998,13 @@ api_a_mrecvfrom_cancel_udp4(suite) ->
     [];
 api_a_mrecvfrom_cancel_udp4(doc) ->
     [];
-api_a_mrecvfrom_cancel_udp4(_Config) when is_list(_Config) ->
+api_a_mrecvfrom_cancel_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvfrom_cancel_udp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvfrom(Sock, 0, nowait) of
+                                  case socket:recvfrom(Sock, 0, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -8758,7 +9014,8 @@ api_a_mrecvfrom_cancel_udp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_udp(InitState)
            end).
 
@@ -8774,13 +9031,14 @@ api_a_mrecvfrom_cancel_udp6(suite) ->
     [];
 api_a_mrecvfrom_cancel_udp6(doc) ->
     [];
-api_a_mrecvfrom_cancel_udp6(_Config) when is_list(_Config) ->
+api_a_mrecvfrom_cancel_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvfrom_cancel_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvfrom(Sock, 0, nowait) of
+                                  case socket:recvfrom(Sock, 0, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -8790,7 +9048,8 @@ api_a_mrecvfrom_cancel_udp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_udp(InitState)
            end).
 
@@ -8806,12 +9065,13 @@ api_a_mrecvmsg_cancel_udp4(suite) ->
     [];
 api_a_mrecvmsg_cancel_udp4(doc) ->
     [];
-api_a_mrecvmsg_cancel_udp4(_Config) when is_list(_Config) ->
+api_a_mrecvmsg_cancel_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvmsg_cancel_udp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -8821,7 +9081,8 @@ api_a_mrecvmsg_cancel_udp4(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_udp(InitState)
            end).
 
@@ -8837,13 +9098,14 @@ api_a_mrecvmsg_cancel_udp6(suite) ->
     [];
 api_a_mrecvmsg_cancel_udp6(doc) ->
     [];
-api_a_mrecvmsg_cancel_udp6(_Config) when is_list(_Config) ->
+api_a_mrecvmsg_cancel_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvmsg_cancel_udp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  case socket:recvmsg(Sock, nowait) of
+                                  case socket:recvmsg(Sock, Nowait) of
                                       {ok, _} = OK ->
                                           OK;
                                       {select, _} = SELECT ->
@@ -8853,7 +9115,8 @@ api_a_mrecvmsg_cancel_udp6(_Config) when is_list(_Config) ->
                                   end
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_udp(InitState)
            end).
 
@@ -8894,7 +9157,8 @@ api_a_mrecv_cancel_udp(InitState) ->
          #{desc => "bind socket (to local address)",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    {ok, State#{port => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -8912,10 +9176,19 @@ api_a_mrecv_cancel_udp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, SelectInfo} ->
-                                   {ok, State#{recv_select_info => SelectInfo}};
+                               {select, SelectInfo}
+                                 when SR =:= nowait ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -8991,10 +9264,18 @@ api_a_mrecv_cancel_udp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, SelectInfo} ->
-                                   {ok, State#{recv_select_info => SelectInfo}};
+                               {select, SelectInfo} when SR =:= nowait ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -9238,12 +9519,13 @@ api_a_maccept_cancel_tcp4(suite) ->
     [];
 api_a_maccept_cancel_tcp4(doc) ->
     [];
-api_a_maccept_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_maccept_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_maccept_cancel_tcp4,
            fun() ->
                    Accept = fun(Sock) ->
-                                    case socket:accept(Sock, nowait) of
+                                    case socket:accept(Sock, Nowait) of
                                         {ok, _} = OK ->
                                             OK;
                                         {select, _} = SELECT ->
@@ -9253,7 +9535,8 @@ api_a_maccept_cancel_tcp4(_Config) when is_list(_Config) ->
                                     end
                             end,
                    InitState = #{domain => inet,
-                                 accept => Accept},
+                                 accept => Accept,
+                                 accept_sref => Nowait},
                    ok = api_a_maccept_cancel_tcp(InitState)
            end).
 
@@ -9270,13 +9553,14 @@ api_a_maccept_cancel_tcp6(suite) ->
     [];
 api_a_maccept_cancel_tcp6(doc) ->
     [];
-api_a_maccept_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_maccept_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_maccept_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Accept = fun(Sock) ->
-                                    case socket:accept(Sock, nowait) of
+                                    case socket:accept(Sock, Nowait) of
                                         {ok, _} = OK ->
                                             OK;
                                         {select, _} = SELECT ->
@@ -9286,7 +9570,8 @@ api_a_maccept_cancel_tcp6(_Config) when is_list(_Config) ->
                                     end
                             end,
                    InitState = #{domain => inet6,
-                                 accept => Accept},
+                                 accept => Accept,
+                                 accept_sref => Nowait},
                    ok = api_a_maccept_cancel_tcp(InitState)
            end).
 
@@ -9329,7 +9614,8 @@ api_a_maccept_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -9351,13 +9637,26 @@ api_a_maccept_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, accept)
                    end},
          #{desc => "await connection (nowait)",
-           cmd  => fun(#{lsock := LSock, accept := Accept} = State) ->
+           cmd  => fun(#{lsock := LSock,
+                         accept := Accept,
+                         accept_sref := SR} = State) ->
                            case Accept(LSock) of
-                               {select, {select_info, T, R} = SelectInfo} ->
-                                   ?SEV_IPRINT("accept select: "
+                               {select, {select_info, T, R} = SelectInfo}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("accept select nowait: "
                                                "~n   T: ~p"
                                                "~n   R: ~p", [T, R]),
-                                   {ok, State#{accept_select_info => SelectInfo}};
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
+                               {select, {select_info, T, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("accept select ref: "
+                                               "~n   T: ~p"
+                                               "~n   R: ~p", [T, SR]),
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -9429,10 +9728,20 @@ api_a_maccept_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, accept)
                    end},
          #{desc => "try accept request (with nowait, expect select)",
-           cmd  => fun(#{lsock := Sock, accept := Accept} = State) ->
+           cmd  => fun(#{lsock := Sock,
+                         accept := Accept,
+                         accept_sref := SR} = State) ->
                            case Accept(Sock) of
-                               {select, SelectInfo} ->
-                                   {ok, State#{accept_select_info => SelectInfo}};
+                               {select, SelectInfo} when SR =:= nowait ->
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   {ok,
+                                    State#{accept_select_info =>
+                                               SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -9669,15 +9978,17 @@ api_a_mrecv_cancel_tcp4(suite) ->
     [];
 api_a_mrecv_cancel_tcp4(doc) ->
     [];
-api_a_mrecv_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_mrecv_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecv_cancel_tcp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_tcp(InitState)
            end).
 
@@ -9693,16 +10004,18 @@ api_a_mrecv_cancel_tcp6(suite) ->
     [];
 api_a_mrecv_cancel_tcp6(doc) ->
     [];
-api_a_mrecv_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_mrecv_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecv_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recv(Sock, 0, nowait)
+                                  socket:recv(Sock, 0, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_tcp(InitState)
            end).
 
@@ -9718,15 +10031,17 @@ api_a_mrecvmsg_cancel_tcp4(suite) ->
     [];
 api_a_mrecvmsg_cancel_tcp4(doc) ->
     [];
-api_a_mrecvmsg_cancel_tcp4(_Config) when is_list(_Config) ->
+api_a_mrecvmsg_cancel_tcp4(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvmsg_cancel_tcp4,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recvmsg(Sock, nowait)
+                                  socket:recvmsg(Sock, Nowait)
                           end,
                    InitState = #{domain => inet,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_tcp(InitState)
            end).
 
@@ -9742,16 +10057,18 @@ api_a_mrecvmsg_cancel_tcp6(suite) ->
     [];
 api_a_mrecvmsg_cancel_tcp6(doc) ->
     [];
-api_a_mrecvmsg_cancel_tcp6(_Config) when is_list(_Config) ->
+api_a_mrecvmsg_cancel_tcp6(Config) when is_list(Config) ->
     ?TT(?SECS(20)),
+    Nowait = nowait(Config),
     tc_try(api_a_mrecvmsg_cancel_tcp6,
            fun() -> has_support_ipv6() end,
            fun() ->
                    Recv = fun(Sock) ->
-                                  socket:recvmsg(Sock, nowait)
+                                  socket:recvmsg(Sock, Nowait)
                           end,
                    InitState = #{domain => inet6,
-                                 recv   => Recv},
+                                 recv => Recv,
+                                 recv_sref => Nowait},
                    ok = api_a_mrecv_cancel_tcp(InitState)
            end).
 
@@ -9793,7 +10110,8 @@ api_a_mrecv_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -9814,7 +10132,7 @@ api_a_mrecv_cancel_tcp(InitState) ->
            cmd  => fun(#{tester := Tester}) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, accept)
                    end},
-         #{desc => "await connection (nowait)",
+         #{desc => "await connection",
            cmd  => fun(#{lsock := LSock} = State) ->
                            case socket:accept(LSock) of
                                {ok, CSock} ->
@@ -9834,12 +10152,21 @@ api_a_mrecv_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{csock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{csock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, {select_info, T, R} = SelectInfo} ->
-                                   ?SEV_IPRINT("recv select: "
+                               {select, {select_info, T, R} = SelectInfo}
+                                 when SR =:= nowait ->
+                                   ?SEV_IPRINT("recv select nowait: "
                                                "~n   Tag: ~p"
                                                "~n   Ref: ~p", [T, R]),
+                                   {ok, State#{recv_select_info => SelectInfo}};
+                               {select, {select_info, T, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   ?SEV_IPRINT("recv select nowait: "
+                                               "~n   Tag: ~p"
+                                               "~n   Ref: ~p", [T, SR]),
                                    {ok, State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
@@ -9914,10 +10241,18 @@ api_a_mrecv_cancel_tcp(InitState) ->
                            ?SEV_AWAIT_CONTINUE(Tester, tester, recv)
                    end},
          #{desc => "try recv request (with nowait, expect select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv,
+                         recv_sref := SR} = State) ->
                            case Recv(Sock) of
-                               {select, SelectInfo} ->
-                                   {ok, State#{recv_select_info => SelectInfo}};
+                               {select, SelectInfo} when SR =:= nowait ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SR} = SelectInfo}
+                                 when is_reference(SR) ->
+                                   {ok,
+                                    State#{recv_select_info => SelectInfo}};
                                {ok, X} ->
                                    {error, {unexpected_select_info, X}};
                                {error, _} = ERROR ->
@@ -10000,7 +10335,7 @@ api_a_mrecv_cancel_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -10334,8 +10669,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, iow) of
                                {ok, IOW} when is_boolean(IOW) ->
                                    {ok, State#{iow => IOW}};
-                               {ok, InvalidIOW} ->
-                                   {error, {invalid, InvalidIOW}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10361,8 +10696,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, iow) of
                                {ok, IOW} ->
                                    ok;
-                               {ok, InvalidIOW} ->
-                                   {error, {invalid, InvalidIOW}};
+                               {ok, _} = OK->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10377,8 +10712,8 @@ api_opt_simple_otp_options() ->
                                {ok, {N, RcvBuf} = V} when is_integer(N) andalso 
                                                           is_integer(RcvBuf) ->
                                    {ok, State#{rcvbuf => V}};
-                               {ok, InvalidRcvBuf} ->
-                                   {error, {invalid, InvalidRcvBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10416,8 +10751,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, rcvbuf) of
                                {ok, RcvBuf} ->
                                    ok;
-                               {ok, InvalidRcvBuf} ->
-                                   {error, {invalid, InvalidRcvBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10429,8 +10764,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, rcvctrlbuf) of
                                {ok, RcvCtrlBuf} when is_integer(RcvCtrlBuf) ->
                                    {ok, State#{rcvctrlbuf => RcvCtrlBuf}};
-                               {ok, InvalidRcvCtrlBuf} ->
-                                   {error, {invalid, InvalidRcvCtrlBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10450,8 +10785,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, rcvctrlbuf) of
                                {ok, RcvCtrlBuf} ->
                                    ok;
-                               {ok, InvalidRcvCtrlBuf} ->
-                                   {error, {invalid, InvalidRcvCtrlBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10462,8 +10797,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, rcvctrlbuf) of
                                {ok, RcvCtrlBuf} when is_integer(RcvCtrlBuf) ->
                                    {ok, State#{rcvctrlbuf => RcvCtrlBuf}};
-                               {ok, InvalidRcvCtrlBuf} ->
-                                   {error, {invalid, InvalidRcvCtrlBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10483,8 +10818,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, rcvctrlbuf) of
                                {ok, RcvCtrlBuf} ->
                                    ok;
-                               {ok, InvalidRcvCtrlBuf} ->
-                                   {error, {invalid, InvalidRcvCtrlBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10497,8 +10832,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, sndctrlbuf) of
                                {ok, SndCtrlBuf} when is_integer(SndCtrlBuf) ->
                                    {ok, State#{sndctrlbuf => SndCtrlBuf}};
-                               {ok, InvalidSndCtrlBuf} ->
-                                   {error, {invalid, InvalidSndCtrlBuf}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10518,8 +10853,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, sndctrlbuf) of
                                {ok, SndCtrlBuf} ->
                                    ok;
-                               {ok, InvalidSndCtrlBuf} ->
-                                   {error, {invalid, InvalidSndCtrlBuf}};
+                               {ok, _} = OK->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10532,8 +10867,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, controlling_process) of
                                {ok, Self} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10547,8 +10882,8 @@ api_opt_simple_otp_options() ->
                            case Get(Sock, controlling_process) of
                                {ok, Dummy} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -10614,8 +10949,8 @@ api_opt_simple_otp_meta_option() ->
                           case Get(Sock) of
                               {ok, undefined} ->
                                   ok;
-                              {ok, Invalid} ->
-                                  {error, {invalid, Invalid}};
+                              {ok, _} = OK ->
+                                  {error, OK};
                               {error, _} = ERROR ->
                                   ERROR
                           end
@@ -10637,8 +10972,8 @@ api_opt_simple_otp_meta_option() ->
                           case Get(Sock) of
                               {ok, Value} ->
                                   ok;
-                              {ok, Invalid} ->
-                                  {error, {invalid, Invalid}};
+                              {ok, _} = OK ->
+                                  {error, OK};
                               {error, _} = ERROR ->
                                   ERROR
                           end
@@ -10665,8 +11000,8 @@ api_opt_simple_otp_meta_option() ->
                           case Get(Sock) of
                               {ok, Value} ->
                                   ok;
-                              {ok, Invalid} ->
-                                  {error, {invalid, Invalid}};
+                              {ok, _} = OK->
+                                  {error, OK};
                               {error, _} = ERROR ->
                                   ERROR
                           end
@@ -10709,8 +11044,8 @@ api_opt_simple_otp_meta_option() ->
                           case Get(Sock) of
                               {ok, Value} ->
                                   ok;
-                              {ok, Invalid} ->
-                                  {error, {invalid, Invalid}};
+                              {ok, _} = OK->
+                                  {error, OK};
                               {error, _} = ERROR ->
                                   ERROR
                           end
@@ -10722,7 +11057,7 @@ api_opt_simple_otp_meta_option() ->
                           case Set(Sock, Value) of
                               ok ->
                                   {error, only_owner_may_set};
-                              {error, not_owner} ->
+                              {error, {invalid, not_owner}} ->
                                   ok;
                               {error, _} = ERROR ->
                                   ERROR
@@ -10803,7 +11138,8 @@ api_opt_simple_otp_rcvbuf_option() ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -11048,7 +11384,7 @@ api_opt_simple_otp_rcvbuf_option() ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -11462,8 +11798,8 @@ api_opt_simple_otp_controlling_process() ->
                            case Get(Sock, controlling_process) of
                                {ok, Tester} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -11471,7 +11807,7 @@ api_opt_simple_otp_controlling_process() ->
          #{desc => "attempt invalid controlling-process transfer (to self)",
            cmd  => fun(#{sock := Sock} = _State) ->
                            case Set(Sock, controlling_process, self()) of
-                               {error, not_owner} ->
+                               {error, {invalid, not_owner}} ->
                                    ok;
                                ok ->
                                    {error, unexpected_success};
@@ -11494,8 +11830,8 @@ api_opt_simple_otp_controlling_process() ->
                            case Get(Sock, controlling_process) of
                                {ok, Self} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -11507,7 +11843,7 @@ api_opt_simple_otp_controlling_process() ->
          #{desc => "attempt invalid controlling-process transfer (to self)",
            cmd  => fun(#{sock := Sock} = _State) ->
                            case Set(Sock, controlling_process, self()) of
-                               {error, not_owner} ->
+                               {error, {invalid, not_owner}} ->
                                    ok;
                                ok ->
                                    {error, unexpected_success};
@@ -11558,8 +11894,8 @@ api_opt_simple_otp_controlling_process() ->
                            case Get(Sock, controlling_process) of
                                {ok, Self} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -11582,8 +11918,8 @@ api_opt_simple_otp_controlling_process() ->
                            case Get(Sock, controlling_process) of
                                {ok, Client} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -11591,7 +11927,7 @@ api_opt_simple_otp_controlling_process() ->
          #{desc => "attempt invalid controlling-process transfer (to self)",
            cmd  => fun(#{sock := Sock} = _State) ->
                            case Set(Sock, controlling_process, self()) of
-                               {error, not_owner} ->
+                               {error, {invalid, not_owner}} ->
                                    ok;
                                ok ->
                                    {error, unexpected_success};
@@ -11615,8 +11951,8 @@ api_opt_simple_otp_controlling_process() ->
                            case Get(Sock, controlling_process) of
                                {ok, Self} ->
                                    ok;
-                               {ok, InvalidPid} ->
-                                   {error, {invalid, InvalidPid}};
+                               {ok, _} = OK ->
+                                   {error, OK};
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -11759,7 +12095,7 @@ api_opt_sock_acceptconn_udp() ->
          #{desc => "bind socket to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -11907,7 +12243,8 @@ api_opt_sock_acceptconn_tcp() ->
          #{desc => "bind listen socket to local address",
            cmd  => fun(#{lsock := Sock, local_sa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    {ok, State#{server_sa => LSA#{port => Port}}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -11999,7 +12336,7 @@ api_opt_sock_acceptconn_tcp() ->
          #{desc => "bind connecting socket to local address",
            cmd  => fun(#{csockc := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -12343,7 +12680,7 @@ api_opt_sock_bindtodevice() ->
          #{desc => "Bind UDP socket 2 to local address",
            cmd  => fun(#{usock2 := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("Expected Success"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -12373,7 +12710,7 @@ api_opt_sock_bindtodevice() ->
          #{desc => "Bind TCP socket 2 to local address",
            cmd  => fun(#{tsock2 := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("Expected Success"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -12546,7 +12883,8 @@ api_opt_sock_broadcast() ->
                            ?SEV_IPRINT("Try bind (socket 1) to: "
                                        "~n   ~p", [BSA]),
                            case socket:bind(Sock, BSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("Expected Success (bound): ~p",
                                                [Port]),
                                    {ok, State#{sa1 => BSA#{port => Port}}};
@@ -12592,7 +12930,8 @@ api_opt_sock_broadcast() ->
                            ?SEV_IPRINT("Try bind (socket 1) to: "
                                        "~n   ~p", [BSA]),
                            case socket:bind(Sock, BSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("Expected Success (bound): ~p",
                                                [Port]),
                                    {ok, State#{sa2 => BSA#{port => Port}}};
@@ -12676,7 +13015,8 @@ api_opt_sock_broadcast() ->
                            ?SEV_IPRINT("Try bind (socket 2) to: "
                                        "~n   ~p", [LSA]),
                            case socket:bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("Expected Success (bound): ~p",
                                                [Port]),
                                    {ok, State#{sa3 => LSA#{port => Port}}};
@@ -13404,8 +13744,7 @@ api_opt_sock_oobinline(_Config) when is_list(_Config) ->
     tc_try(api_opt_sock_ooinline,
            fun() ->
                    has_support_sock_oobinline(),
-                   has_support_send_flag_oob(),
-                   has_support_recv_flag_oob(),
+                   has_support_msg_flag(oob),
                    is_valid_oobinline_platform()
            end,
            fun() ->
@@ -13490,14 +13829,15 @@ do_api_opt_sock_oobinline(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -13736,7 +14076,7 @@ do_api_opt_sock_oobinline(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -14046,14 +14386,14 @@ api_opt_sock_passcred_tcp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, socket, passcred)
                           end,
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov  => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
-                                      {ok, #{ctrl := CMsgHdrs,
+                                      {ok, #{ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {CMsgHdrs, Data}};
+                                          {ok, {CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -14108,14 +14448,15 @@ api_opt_sock_passcred_tcp(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -14332,7 +14673,7 @@ api_opt_sock_passcred_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -14407,9 +14748,9 @@ api_opt_sock_passcred_tcp(InitState) ->
                                    ok;
                                {ok, {[], UnexpData}} ->
                                    {error, {unexpected_reply_data, UnexpData}};
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, BadReply} ->
                                    {error, {unexpected_reply, BadReply}};
                                {error, _} = ERROR ->
@@ -14465,19 +14806,19 @@ api_opt_sock_passcred_tcp(InitState) ->
                            case Recv(Sock) of
                                {ok, {[#{level := socket,
                                         type  := passcred,
-                                        data  := Cred}], ?BASIC_REP}} ->
+                                        value := Cred}], ?BASIC_REP}} ->
                                    %% socket:setopt(Sock, otp, debug, false),
                                    ?SEV_IPRINT("received reply *with* "
                                                "expected passcred: "
                                                "~n   ~p", [Cred]),
                                    ok;
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
                                    %% socket:setopt(Sock, otp, debug, false),
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, {[#{level := socket,
                                         type  := passcred,
-                                        data  := _Cred}], BadData}} ->
+                                        value := _Cred}], BadData}} ->
                                    %% socket:setopt(Sock, otp, debug, false),
                                    {error, {unexpected_reply_data,
                                             BadData}};
@@ -14539,9 +14880,9 @@ api_opt_sock_passcred_tcp(InitState) ->
                                    ?SEV_IPRINT("received reply *without* "
                                                "passcred"),
                                    ok;
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, {[], BadData}} ->
                                    {error, {unexpected_reply_data,
                                             BadData}};
@@ -14828,7 +15169,7 @@ api_opt_sock_peek_off_tcpL(_Config) when is_list(_Config) ->
            fun() ->
                    has_support_unix_domain_socket(),
                    has_support_sock_peek_off(),
-                   has_support_recv_flag_peek()
+                   has_support_msg_flag(peek)
            end,
            fun() ->
                    Set  = fun(Sock, Val) when is_integer(Val) ->
@@ -14890,8 +15231,9 @@ api_opt_sock_peek_off(InitState) ->
            cmd  => fun(#{lsock := LSock,
                          lsa   := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, _Port} ->
-                                   ok; % We do not care about the port for local
+                               ok ->
+                                   %% We do not care about the port for local
+                                   ok;
                                {error, _} = ERROR ->
                                    ERROR
                            end
@@ -15221,7 +15563,7 @@ api_opt_sock_peek_off(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -15599,7 +15941,7 @@ api_opt_sock_peercred_tcp(_InitState) ->
     %%                      lsock  := LSock,
     %%                      lsa    := LSA} = _State) ->
     %%                        case socket:bind(LSock, LSA) of
-    %%                            {ok, _Port} ->
+    %%                            ok ->
     %%                                ok;
     %%                            {error, _} = ERROR ->
     %%                                ERROR
@@ -16049,7 +16391,7 @@ api_opt_sock_peercred_tcp(_InitState) ->
 %%                    ?FAIL({open, OReason})
 %%            end,
 %%     case socket:bind(Sock, LSA) of
-%%         {ok, _} ->
+%%         ok ->
 %%             ok;
 %%         {error, BReason} ->
 %%             (catch socket:close(Sock)),
@@ -16158,7 +16500,7 @@ api_opt_sock_priority(InitState) ->
          #{desc => "bind",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16323,7 +16665,7 @@ api_opt_sock_buf(InitState) ->
          #{desc => "bind",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16481,7 +16823,7 @@ api_opt_sock_timeo(InitState) ->
          #{desc => "bind",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16653,7 +16995,7 @@ api_opt_sock_lowat(InitState) ->
          #{desc => "bind",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16764,16 +17106,16 @@ api_opt_sock_timestamp_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, socket, timestamp)
                           end,
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -16815,7 +17157,7 @@ api_opt_sock_timestamp_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16856,7 +17198,7 @@ api_opt_sock_timestamp_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -16949,25 +17291,16 @@ api_opt_sock_timestamp_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := socket,
                                              type  := timestamp,
-                                             data  := TS}], ?BASIC_REQ}} ->
+                                             value := TS}], ?BASIC_REQ}} ->
                                    ?SEV_IPRINT("received req *with* "
                                                "expected timestamp: "
                                                "~n   ~p", [TS]),
                                    ok;
-                               {ok, {Src, [#{level := Level,
-                                             type  := Type,
-                                             data  := Data} = CMsgHdr], ?BASIC_REQ}} ->
-                                   ?SEV_EPRINT("Unexpected control message header:"
-                                               "~n   Level: ~p"
-                                               "~n   Type:  ~p"
-                                               "~n   Data:  ~p",
-                                               [Level, Type, Data]),
-                                   {error, {unexpected_cmsghdr, CMsgHdr}};
-                               {ok, {Src, CMsgHdrs, ?BASIC_REQ}} ->
-                                   ?SEV_EPRINT("Unexpected control message header(s):"
-                                               "~n   CMsgHdrs: ~p",
-                                               [CMsgHdrs]),
-                                   {error, {unexpected_cmsghdrs, CMsgHdrs}};
+                               {ok, {Src, CMsgs, ?BASIC_REQ}} ->
+                                   ?SEV_EPRINT("Unexpected control message(s):"
+                                               "~n   CMsgs: ~p",
+                                               [CMsgs]),
+                                   {error, {unexpected_cmsgs, CMsgs}};
                                {ok, UnexpData} ->
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -17003,8 +17336,8 @@ api_opt_sock_timestamp_udp(InitState) ->
            cmd  => fun(#{sock_dst := Sock, sa_src := Src, recv := Recv}) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := socket,
-                                             type   := timestamp,
-                                             data   := TS}], ?BASIC_REQ}} ->
+                                             type  := timestamp,
+                                             value := TS}], ?BASIC_REQ}} ->
                                    ?SEV_IPRINT("received req *with* "
                                                "expected timestamp: "
                                                "~n   ~p", [TS]),
@@ -17166,14 +17499,14 @@ api_opt_sock_timestamp_tcp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, socket, timestamp)
                           end,
                    Send = fun(Sock, Data) ->
-                                  MsgHdr = #{iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov  => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
-                                      {ok, #{ctrl := CMsgHdrs,
+                                      {ok, #{ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {CMsgHdrs, Data}};
+                                          {ok, {CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -17228,14 +17561,15 @@ api_opt_sock_timestamp_tcp(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -17452,7 +17786,7 @@ api_opt_sock_timestamp_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -17529,9 +17863,9 @@ api_opt_sock_timestamp_tcp(InitState) ->
                                    ok;
                                {ok, {[], UnexpData}} ->
                                    {error, {unexpected_reply_data, UnexpData}};
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, BadReply} ->
                                    {error, {unexpected_reply, BadReply}};
                                {error, _} = ERROR ->
@@ -17595,31 +17929,21 @@ api_opt_sock_timestamp_tcp(InitState) ->
            cmd  => fun(#{sock := Sock, recv := Recv, get := Get}) ->
                            case Recv(Sock) of
                                {ok, {[#{level := socket,
-                                        type   := timestamp,
-                                        data   := TS}], ?BASIC_REP}} ->
+                                        type  := timestamp,
+                                        value := TS}], ?BASIC_REP}} ->
                                    ?SEV_IPRINT("received reply *with* "
                                                "expected timestamp: "
                                                "~n   ~p", [TS]),
                                    ok;
-                               {ok, {[#{level := socket,
-                                        type  := timestamp,
-                                        data  := UTS}], BadData}} ->
-                                   ?SEV_EPRINT("received reply *with* "
-                                               "unexpected timestamp:"
-                                               "~n   ~p"
-                                               "Current timestamp value:"
-                                               "~n   ~p",
-                                               [UTS, Get(Sock)]),
-                                   {error, {unexpected_reply_data, BadData}};
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
                                    ?SEV_EPRINT("received reply *with* "
                                                "unexpected cmsg headers:"
                                                "~n   ~p"
                                                "Current timestamp value: "
                                                "~n   ~p",
-                                               [BadCMsgHdrs, Get(Sock)]),
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                                               [BadCMsgs, Get(Sock)]),
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, BadReply} ->
                                    {error, {unexpected_reply, BadReply}};
                                {error, _} = ERROR ->
@@ -17676,9 +18000,9 @@ api_opt_sock_timestamp_tcp(InitState) ->
                                    ?SEV_IPRINT("received reply *without* "
                                                "timestamp"),
                                    ok;
-                               {ok, {BadCMsgHdrs, ?BASIC_REP}} ->
-                                   {error, {unexpected_reply_cmsghdrs,
-                                            BadCMsgHdrs}};
+                               {ok, {BadCMsgs, ?BASIC_REP}} ->
+                                   {error, {unexpected_reply_cmsgs,
+                                            BadCMsgs}};
                                {ok, {[], BadData}} ->
                                    {error, {unexpected_reply_data,
                                             BadData}};
@@ -18022,7 +18346,8 @@ api_opt_ip_add_drop_membership() ->
          #{desc => "bind recv socket to multicast address",
            cmd  => fun(#{sock := Sock, msa := MSA} = State) ->
                            case sock_bind(Sock, MSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("bound to:"
                                                "~n   ~p", [Port]),
                                    {ok, State#{msa => MSA#{port => Port}}};
@@ -18309,25 +18634,25 @@ api_opt_ip_pktinfo_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ip, pktinfo)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
                              (Sock, Data, Dest, Info) ->
                                   %% We do not support this at the moment!!!
-                                  CMsgHdr = #{level => ip,
+                                  CMsg = #{level => ip,
                                               type  => pktinfo,
                                               data  => Info},
-                                  MsgHdr  = #{addr => Dest,
-                                              ctrl => [CMsgHdr],
+                                  Msg  = #{addr => Dest,
+                                              ctrl => [CMsg],
                                               iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -18368,7 +18693,7 @@ api_opt_ip_pktinfo_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -18393,7 +18718,7 @@ api_opt_ip_pktinfo_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -18522,7 +18847,7 @@ api_opt_ip_pktinfo_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := pktinfo,
-                                             data  := #{addr     := Addr,
+                                             value := #{addr     := Addr,
                                                         ifindex  := IfIdx,
                                                         spec_dst := SpecDst}}],
                                      ?BASIC_REQ}} ->
@@ -18673,25 +18998,25 @@ api_opt_ip_recvopts_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ip, recvopts)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
                              (Sock, Data, Dest, Info) ->
                                   %% We do not support this at the moment!!!
-                                  CMsgHdr = #{level => ip,
+                                  CMsg = #{level => ip,
                                               type  => options,
                                               data  => Info},
-                                  MsgHdr  = #{addr => Dest,
-                                              ctrl => [CMsgHdr],
+                                  Msg  = #{addr => Dest,
+                                              ctrl => [CMsg],
                                               iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -18759,7 +19084,7 @@ api_opt_ip_recvopts_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -18784,7 +19109,7 @@ api_opt_ip_recvopts_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19124,16 +19449,16 @@ api_opt_ip_recvorigdstaddr_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ip, recvorigdstaddr)
                           end,
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -19174,7 +19499,7 @@ api_opt_ip_recvorigdstaddr_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19199,7 +19524,7 @@ api_opt_ip_recvorigdstaddr_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19290,7 +19615,7 @@ api_opt_ip_recvorigdstaddr_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := origdstaddr,
-                                             data  := Addr}], ?BASIC_REQ}} ->
+                                             value := Addr}], ?BASIC_REQ}} ->
                                    ?SEV_IPRINT("got origdstaddr "
                                                "control message header: "
                                                "~n   ~p", [Addr]),
@@ -19380,24 +19705,24 @@ api_opt_ip_recvtos_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ip, recvtos)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
                              (Sock, Data, Dest, TOS) ->
-                                  CMsgHdr = #{level => ip,
+                                  CMsg = #{level => ip,
                                               type  => tos,
                                               data  => TOS},
-                                  MsgHdr  = #{addr => Dest,
-                                              ctrl => [CMsgHdr],
+                                  Msg  = #{addr => Dest,
+                                              ctrl => [CMsg],
                                               iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -19438,7 +19763,7 @@ api_opt_ip_recvtos_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19463,7 +19788,7 @@ api_opt_ip_recvtos_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19618,7 +19943,7 @@ api_opt_ip_recvtos_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := TOS,
-                                             data  := 0}], ?BASIC_REQ}}  
+                                             value := 0}], ?BASIC_REQ}}
                                  when ((TOS =:= tos) orelse (TOS =:= recvtos)) ->
                                    ?SEV_IPRINT("got default TOS (~w) "
                                                "control message header", [TOS]),
@@ -19664,7 +19989,7 @@ api_opt_ip_recvtos_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := TOS,
-                                             data  := mincost = TOSData}],
+                                             value := mincost = TOSData}],
                                      ?BASIC_REQ}} 
                                  when ((TOS =:= tos) orelse (TOS =:= recvtos)) ->
                                    ?SEV_IPRINT("got expected TOS (~w) = ~w "
@@ -19758,24 +20083,24 @@ api_opt_ip_recvttl_udp4(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ip, recvttl)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
                              (Sock, Data, Dest, TTL) ->
-                                  CMsgHdr = #{level => ip,
+                                  CMsg = #{level => ip,
                                               type  => ttl,
-                                              data  => TTL},
-                                  MsgHdr  = #{addr => Dest,
-                                              ctrl => [CMsgHdr],
+                                              value => TTL},
+                                  Msg  = #{addr => Dest,
+                                              ctrl => [CMsg],
                                               iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -19816,7 +20141,7 @@ api_opt_ip_recvttl_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19841,7 +20166,7 @@ api_opt_ip_recvttl_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -19943,7 +20268,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                    ok;
                                {ok, {Src, [#{level := ip,
                                              type  := TTLType,
-                                             data  := TTL}], ?BASIC_REQ}}
+                                             value := TTL}], ?BASIC_REQ}}
                                when ((TTLType =:= recvttl) andalso
                                      (TTL =:= 255)) ->
                                    %% This is the behaviopur on Solaris (11)
@@ -20000,7 +20325,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := TTLType,
-                                             data  := TTL}], ?BASIC_REQ}}
+                                             value := TTL}], ?BASIC_REQ}}
                                when ((TTLType =:= ttl) orelse 
                                      (TTLType =:= recvttl)) ->
                                    ?SEV_IPRINT("Got (default) TTL (~w): ~p",
@@ -20017,7 +20342,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                                [Src, BadSrc,
                                                 [#{level => ip,
 						   type  => ttl,
-						   data  => "something"}],
+						   value => "something"}],
 						BadCHdrs,
                                                 ?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
@@ -20029,7 +20354,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                                "~n   Unexp Data:    ~p",
                                                [Src, [#{level => ip,
 							type  => ttl,
-							data  => "something"}],
+							value => "something"}],
 						?BASIC_REQ, UnexpData]),
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -20048,7 +20373,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ip,
                                              type  := TTLType,
-                                             data  := 100 = TTL}], ?BASIC_REQ}}
+                                             value := 100 = TTL}], ?BASIC_REQ}}
                                when ((TTLType =:= ttl) orelse
                                      (TTLType =:= recvttl)) ->
                                    ?SEV_IPRINT("Got TTL (~w): ~p",
@@ -20056,7 +20381,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                    ok;
                                {ok, {Src, [#{level := ip,
                                              type  := TTLType,
-                                             data  := BadTTL}], ?BASIC_REQ}}
+                                             value := BadTTL}], ?BASIC_REQ}}
                                when ((TTLType =:= ttl) orelse
                                      (TTLType =:= recvttl)) ->
                                    ?SEV_EPRINT("Unexpected TTL: "
@@ -20075,7 +20400,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                                [Src, BadSrc,
                                                 [#{level => ip,
 						   type  => ttl,
-						   data  => 100}], BadCHdrs,
+						   value => 100}], BadCHdrs,
                                                 ?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
                                {ok, UnexpData} ->
@@ -20086,7 +20411,7 @@ api_opt_ip_recvttl_udp(InitState) ->
                                                "~n   Unexp Data:    ~p",
                                                [Src, [#{level => ip,
 							type  => ttl,
-							data  => 100}],
+							value => 100}],
 						?BASIC_REQ, UnexpData]),
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -20176,7 +20501,7 @@ api_opt_ip_tos_udp(InitState) ->
          #{desc => "bind",
            cmd  => fun(#{sock := Sock, lsa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("socket bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -20374,7 +20699,7 @@ api_opt_ip_recverr_udp4(suite) ->
     [];
 api_opt_ip_recverr_udp4(doc) ->
     [];
-api_opt_ip_recverr_udp4(_Config) when is_list(_Config) ->
+api_opt_ip_recverr_udp4(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
     tc_try(api_opt_ip_recverr_udp4,
            fun() ->
@@ -20387,11 +20712,11 @@ api_opt_ip_recverr_udp4(_Config) when is_list(_Config) ->
                    Get  = fun(Sock, Key) ->
                                   socket:getopt(Sock, ip, Key)
                           end,
-                   Send = fun(Sock, Data, Dest) ->
-                                  socket:sendto(Sock, Data, Dest, [], nowait)
+                   Send = fun(Sock, Data, Dest, Tmo) ->
+                                  socket:sendto(Sock, Data, Dest, [], Tmo)
                           end,
-                   Recv = fun(Sock) ->
-                                  socket:recvfrom(Sock, 0, [], nowait)
+                   Recv = fun(Sock, Tmo) ->
+                                  socket:recvfrom(Sock, 0, [], Tmo)
                           end,
                    InitState = #{domain => inet,
                                  proto  => udp,
@@ -20399,7 +20724,7 @@ api_opt_ip_recverr_udp4(_Config) when is_list(_Config) ->
                                  recv   => Recv,
                                  set    => Set,
                                  get    => Get},
-                   ok = api_opt_recverr_udp(InitState)
+                   ok = api_opt_recverr_udp(Config, InitState)
            end).
 
 
@@ -20413,7 +20738,7 @@ api_opt_ipv6_recverr_udp6(suite) ->
     [];
 api_opt_ipv6_recverr_udp6(doc) ->
     [];
-api_opt_ipv6_recverr_udp6(_Config) when is_list(_Config) ->
+api_opt_ipv6_recverr_udp6(Config) when is_list(Config) ->
     ?TT(?SECS(5)),
     tc_try(api_opt_ipv6_recverr_udp6,
            fun() ->
@@ -20427,11 +20752,11 @@ api_opt_ipv6_recverr_udp6(_Config) when is_list(_Config) ->
                    Get  = fun(Sock, Key) ->
                                   socket:getopt(Sock, ipv6, Key)
                           end,
-                   Send = fun(Sock, Data, Dest) ->
-                                  socket:sendto(Sock, Data, Dest, [], nowait)
+                   Send = fun(Sock, Data, Dest, Tmo) ->
+                                  socket:sendto(Sock, Data, Dest, [], Tmo)
                           end,
-                   Recv = fun(Sock) ->
-                                  socket:recvfrom(Sock, 0, [], nowait)
+                   Recv = fun(Sock, Tmo) ->
+                                  socket:recvfrom(Sock, 0, [], Tmo)
                           end,
                    InitState = #{domain => inet6,
                                  proto  => udp,
@@ -20439,13 +20764,13 @@ api_opt_ipv6_recverr_udp6(_Config) when is_list(_Config) ->
                                  recv   => Recv,
                                  set    => Set,
                                  get    => Get},
-                   ok = api_opt_recverr_udp(InitState)
+                   ok = api_opt_recverr_udp(Config, InitState)
            end).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-api_opt_recverr_udp(InitState) ->
+api_opt_recverr_udp(Config, InitState) ->
     Seq = 
         [
          #{desc => "create socket",
@@ -20459,13 +20784,19 @@ api_opt_recverr_udp(InitState) ->
                            end
                    end},
          #{desc => "bind (to loopback)",
-           cmd  => fun(#{sock := Sock} = _State) ->
+           cmd  => fun(#{sock := Sock} = State) ->
                            case socket:bind(Sock, loopback) of
-                               {ok, _} ->
-                                   ?SEV_IPRINT("bound"),
-                                   ok;
-                               {error, _} = ERROR ->
-                                   ERROR
+                               ok ->
+                                   case socket:sockname(Sock) of
+                                       {ok, Addr} ->
+                                           ?SEV_IPRINT(
+                                              "bound to ~p", [Addr]),
+                                           {ok, State#{addr => Addr}};
+                                       {error, _} = ERROR_1 ->
+                                           ERROR_1
+                                   end;
+                               {error, _} = ERROR_2 ->
+                                   ERROR_2
                            end
                    end},
 
@@ -20480,10 +20811,18 @@ api_opt_recverr_udp(InitState) ->
                    end},
 
          #{desc => "try (async) read (=> select)",
-           cmd  => fun(#{sock := Sock, recv := Recv} = State) ->
-                           case Recv(Sock) of
-                               {select, SelectInfo} ->
-                                   ?SEV_IPRINT("expected select: "
+           cmd  => fun(#{sock := Sock,
+                         recv := Recv} = State) ->
+                           RecvRef = nowait(Config),
+                           case Recv(Sock, RecvRef) of
+                               {select, SelectInfo} when RecvRef =:= nowait ->
+                                   ?SEV_IPRINT("expected select nowait: "
+					       "~n   ~p", [SelectInfo]),
+                                   {ok, State#{rselect => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, RecvRef} = SelectInfo}
+                                 when is_reference(RecvRef) ->
+                                   ?SEV_IPRINT("expected select ref: "
 					       "~n   ~p", [SelectInfo]),
                                    {ok, State#{rselect => SelectInfo}};
                                {ok, _} ->
@@ -20495,8 +20834,11 @@ api_opt_recverr_udp(InitState) ->
                            end
                    end},
 
-         #{desc => "try (dummy) send",
-           cmd  => fun(#{domain := Domain, sock := Sock, send := Send} = State) ->
+         #{desc => "try send to nowhere",
+           cmd  => fun(#{domain := Domain,
+                         sock := Sock,
+                         send := Send} = State) ->
+                           SendRef = nowait(Config),
                            Dest = #{family => Domain,
                                     addr   => if
                                                   (Domain =:= inet) ->
@@ -20504,13 +20846,20 @@ api_opt_recverr_udp(InitState) ->
                                                   (Domain =:= inet6) ->
                                                       {0,0,0,0,0,0,0,1}
                                               end,
-                                    port   => 1234},
-                           case Send(Sock, <<"ping">>, Dest) of
+                                    port   => 44444},
+                           case Send(Sock, <<"ping">>, Dest, SendRef) of
                                ok ->
                                    ?SEV_IPRINT("sent"),
                                    ok;
-                               {select, SelectInfo} ->
-                                   ?SEV_IPRINT("expected select: ~p",
+                               {select, SelectInfo}
+                                 when SendRef =:= nowait ->
+                                   ?SEV_IPRINT("expected select nowait: ~p",
+					       [SelectInfo]),
+                                   {ok, State#{sselect => SelectInfo}};
+                               {select,
+                                {select_info, _Tag, SendRef} = SelectInfo}
+                                 when is_reference(SendRef) ->
+                                   ?SEV_IPRINT("expected select ref: ~p",
 					       [SelectInfo]),
                                    {ok, State#{sselect => SelectInfo}};
                                {error, Reason} = ERROR ->
@@ -20520,7 +20869,7 @@ api_opt_recverr_udp(InitState) ->
                            end
                    end},
 
-         #{desc => "await select message",
+         #{desc => "await receive select message",
            cmd  => fun(#{sock    := Sock,
                          rselect := {select_info, _, Ref}} = _State) ->
                            receive
@@ -20533,13 +20882,46 @@ api_opt_recverr_udp(InitState) ->
 
          #{desc => "try recv - expect econnrefused",
            cmd  => fun(#{sock := Sock, recv := Recv} = _State) ->
-                           case Recv(Sock) of
+                           case Recv(Sock, infinity) of
                                {error, econnrefused = Reason} ->
                                    ?SEV_IPRINT("expected failure: ~p", [Reason]),
                                    ok;
                                {ok, _} ->
                                    ?SEV_EPRINT("unexpected successs"),
                                    {error, unexpected_success};
+                               {select, SelectInfo} ->
+                                   ?SEV_EPRINT("unexpected select: ~p",
+                                               [SelectInfo]),
+                                   {error, unexpected_success};
+                               {error, Reason} = ERROR ->
+                                   ?SEV_EPRINT("unexpected error: ~p",
+                                               [Reason]),
+                                   ERROR
+                           end
+                   end},
+
+         #{desc => "send to self",
+           cmd  =>
+               fun(#{sock := Sock,
+                     send := Send,
+                     addr := Addr} = _State) ->
+                       case Send(Sock, <<"ring">>, Addr, infinity) of
+                           ok ->
+                               ?SEV_IPRINT("sent to self"),
+                               ok;
+                           {error, _} = Error ->
+                               Error
+                       end
+               end},
+
+         #{desc => "try recv - expect data sent to self",
+           cmd  => fun(#{sock := Sock,
+                         addr := Addr,
+                         recv := Recv} = _State) ->
+                           case Recv(Sock, infinity) of
+                               {ok, {Addr, <<"ring">>}} ->
+                                   ?SEV_IPRINT("receive expected"),
+                                   ok;
                                {select, SelectInfo} ->
                                    ?SEV_EPRINT("unexpected select: ~p",
                                                [SelectInfo]),
@@ -20564,14 +20946,14 @@ api_opt_recverr_udp(InitState) ->
 			       if (Domain =:= inet)  -> ip;
 				  (Domain =:= inet6) -> ipv6
 			       end,
-                           case socket:recvmsg(Sock, [errqueue]) of
+                           case socket:recvmsg(Sock, [errqueue], 0) of
                                {ok, #{addr  := #{family := Domain,
 						 addr   := Addr},
                                       flags := [errqueue],
                                       iov   := [<<"ping">>],
                                       ctrl  := [#{level := Level,
                                                   type  := recverr,
-                                                  data  := 
+                                                  value :=
                                                       #{code     := port_unreach,
                                                         data     := 0,
                                                         error    := econnrefused,
@@ -20580,17 +20962,16 @@ api_opt_recverr_udp(InitState) ->
 								      addr   := Addr},
                                                         origin   := Origin,
                                                         type     := dest_unreach}
-                                                 }]} = MsgHdr} ->
+                                                 }]} = Msg} ->
                                    ?SEV_IPRINT("expected error queue (decoded): "
-                                               "~n   ~p", [MsgHdr]),
+                                               "~n   ~p", [Msg]),
                                    ok;
                                {ok, #{addr  := #{family := Domain,
 						 addr   := _Addr},
                                       flags := [errqueue],
                                       iov   := [<<"ping">>],
-                                      ctrl  := [#{level := Level,
-                                                  type  := recverr,
-                                                  data  := _Data}]} = _MsgHdr} ->
+                                      value := [#{level := Level,
+                                                  type  := recverr}]} = _Msg} ->
                                    ?SEV_IPRINT("expected error queue"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -20766,25 +21147,25 @@ api_opt_ip_mopts_udp4(_Config) when is_list(_Config) ->
 				    socket:setopt(Sock, Level, Opt, true)
                             end,
                    Send = fun(Sock, Data, Dest, []) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
 			     (Sock, Data, Dest, Hdrs) when is_list(Hdrs) ->
-				  CMsgHdrs = [#{level => Level,
+				  CMsgs = [#{level => Level,
 						type  => Type,
-						data  => Val} ||
+						value => Val} ||
 						 {Level, Type, Val} <- Hdrs],
-                                  MsgHdr   = #{addr => Dest,
-					       ctrl => CMsgHdrs,
+                                  Msg   = #{addr => Dest,
+					       ctrl => CMsgs,
 					       iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -20820,7 +21201,7 @@ api_opt_ip_mopts_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -20845,7 +21226,7 @@ api_opt_ip_mopts_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -20910,10 +21291,10 @@ api_opt_ip_mopts_udp(InitState) ->
 			 recv     := Recv,
 			 opts     := Opts}) ->
                            case Recv(Sock) of
-                               {ok, {Src, CMsgHdrs, ?BASIC_REQ}}
-                                 when length(CMsgHdrs) =:= length(Opts)  ->
+                               {ok, {Src, CMsgs, ?BASIC_REQ}}
+                                 when length(CMsgs) =:= length(Opts)  ->
                                    ?SEV_IPRINT("Got (expected) cmsg headers: "
-					       "~n   ~p", [CMsgHdrs]),
+					       "~n   ~p", [CMsgs]),
 				   %% We should really verify the headers:
 				   %% values, types and so on...
                                    ok;
@@ -21004,25 +21385,25 @@ api_opt_ipv6_recvpktinfo_udp6(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ipv6, recvpktinfo)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
                              (Sock, Data, Dest, Info) ->
                                   %% We do not support this at the moment!!!
-                                  CMsgHdr = #{level => ipv6,
+                                  CMsg = #{level => ipv6,
                                               type  => pktinfo,
                                               data  => Info},
-                                  MsgHdr  = #{addr => Dest,
-                                              ctrl => [CMsgHdr],
+                                  Msg  = #{addr => Dest,
+                                              ctrl => [CMsg],
                                               iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -21058,7 +21439,7 @@ api_opt_ipv6_recvpktinfo_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21083,7 +21464,7 @@ api_opt_ipv6_recvpktinfo_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21173,7 +21554,7 @@ api_opt_ipv6_recvpktinfo_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ipv6,
                                              type  := pktinfo,
-                                             data  := #{addr    := Addr,
+                                             value := #{addr    := Addr,
                                                         ifindex := IfIdx}}],
                                      ?BASIC_REQ}} ->
                                    ?SEV_IPRINT("Got (default) Pkt Info: "
@@ -21192,7 +21573,7 @@ api_opt_ipv6_recvpktinfo_udp(InitState) ->
                                                [Src, BadSrc,
                                                 #{level => ipv6,
                                                   type  => pktinfo,
-                                                  data  => "something"} , BadCHdrs,
+                                                  value => "something"} , BadCHdrs,
                                                 ?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
                                {ok, UnexpData} ->
@@ -21271,16 +21652,16 @@ api_opt_ipv6_flowinfo_udp6(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ipv6, flowinfo)
                           end,
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -21316,7 +21697,7 @@ api_opt_ipv6_flowinfo_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21341,7 +21722,7 @@ api_opt_ipv6_flowinfo_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21431,7 +21812,7 @@ api_opt_ipv6_flowinfo_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ipv6,
                                              type  := flowinfo,
-                                             data  := FlowID}], ?BASIC_REQ}} ->
+                                             value := FlowID}], ?BASIC_REQ}} ->
                                    ?SEV_IPRINT("Got flow info: "
 					       "~n   Flow ID: ~p", [FlowID]),
                                    ok;
@@ -21446,7 +21827,7 @@ api_opt_ipv6_flowinfo_udp(InitState) ->
                                                [Src, BadSrc,
                                                 #{level => ipv6,
 						  type  => flowinfo,
-						  data  => "something"},
+						  value => "something"},
 						BadCHdrs,
 						?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
@@ -21539,16 +21920,16 @@ api_opt_ipv6_hoplimit_udp6(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ipv6, Opt)
                           end,
                    Send = fun(Sock, Data, Dest) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -21584,7 +21965,7 @@ api_opt_ipv6_hoplimit_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21609,7 +21990,7 @@ api_opt_ipv6_hoplimit_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21718,7 +22099,7 @@ api_opt_ipv6_hoplimit_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ipv6,
                                              type  := hoplimit,
-                                             data  := HL}], ?BASIC_REQ}}
+                                             value := HL}], ?BASIC_REQ}}
                                  when is_integer(HL) ->
                                    ?SEV_IPRINT("Got hop limit: "
 					       "~n   Hop Limit: ~p", [HL]),
@@ -21734,7 +22115,7 @@ api_opt_ipv6_hoplimit_udp(InitState) ->
                                                [Src, BadSrc,
                                                 #{level => ipv6,
 						  type  => hoplimit,
-						  data  => "something"},
+						  value => "something"},
 						BadCHdrs,
 						?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
@@ -21746,7 +22127,7 @@ api_opt_ipv6_hoplimit_udp(InitState) ->
                                                "~n   Unexp Data:    ~p",
                                                [Src, #{level => ipv6,
 						       type  => hoplimit,
-						       data  => "something"},
+						       value => "something"},
 						?BASIC_REQ, UnexpData]),
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -21828,25 +22209,25 @@ api_opt_ipv6_tclass_udp6(_Config) when is_list(_Config) ->
                                   socket:getopt(Sock, ipv6, Opt)
                           end,
                    Send = fun(Sock, Data, Dest, default) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
 			     (Sock, Data, Dest, TC) ->
                                   TCHdr    = #{level => ipv6,
 					       type  => tclass,
 					       data  => TC},
-				  CMsgHdrs = [TCHdr],
-                                  MsgHdr   = #{addr => Dest,
-					       ctrl => CMsgHdrs,
+				  CMsgs = [TCHdr],
+                                  Msg   = #{addr => Dest,
+					       ctrl => CMsgs,
 					       iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -21882,7 +22263,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -21907,7 +22288,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -22016,7 +22397,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ipv6,
                                              type  := tclass,
-                                             data  := TClass}], ?BASIC_REQ}}
+                                             value := TClass}], ?BASIC_REQ}}
 			       when is_integer(TClass) ->
                                    ?SEV_IPRINT("Got tclass: "
 					       "~n   TClass: ~p", [TClass]),
@@ -22032,7 +22413,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
                                                [Src, BadSrc,
                                                 #{level => ipv6,
 						  type  => tclass,
-						  data  => "something"},
+						  value => "something"},
 						BadCHdrs,
 						?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
@@ -22044,7 +22425,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
                                                "~n   Unexp Data:    ~p",
                                                [Src, #{level => ipv6,
 						       type  => tclass,
-						       data  => "something"},
+						       value => "something"},
 						?BASIC_REQ, UnexpData]),
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -22063,14 +22444,14 @@ api_opt_ipv6_tclass_udp(InitState) ->
                            case Recv(Sock) of
                                {ok, {Src, [#{level := ipv6,
                                              type  := tclass,
-                                             data  := 1 = TClass}], ?BASIC_REQ}}
+                                             value := 1 = TClass}], ?BASIC_REQ}}
 			       when is_integer(TClass) ->
                                    ?SEV_IPRINT("Got (expected) tclass: "
 					       "~n   TClass: ~p", [TClass]),
                                    ok;
                                {ok, {_Src, [#{level := ipv6,
 					      type  := tclass,
-					      data  := TClass}], ?BASIC_REQ}}
+					      value := TClass}], ?BASIC_REQ}}
 			       when is_integer(TClass) ->
                                    ?SEV_EPRINT("Unexpected tclass: "
                                                "~n   Expect TClass: ~p"
@@ -22088,7 +22469,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
                                                [Src, BadSrc,
                                                 #{level => ipv6,
 						  type  => tclass,
-						  data  => "something"},
+						  value => "something"},
 						BadCHdrs,
 						?BASIC_REQ, BadReq]),
                                    {error, {unexpected_data, UnexpData}};
@@ -22100,7 +22481,7 @@ api_opt_ipv6_tclass_udp(InitState) ->
                                                "~n   Unexp Data:    ~p",
                                                [Src, #{level => ipv6,
 						       type  => tclass,
-						       data  => "something"},
+						       value => "something"},
 						?BASIC_REQ, UnexpData]),
                                    {error, {unexpected_data, UnexpData}};
                                {error, _} = ERROR ->
@@ -22240,25 +22621,25 @@ api_opt_ipv6_mopts_udp6(_Config) when is_list(_Config) ->
 				    socket:setopt(Sock, Level, Opt, true)
                             end,
                    Send = fun(Sock, Data, Dest, []) ->
-                                  MsgHdr = #{addr => Dest,
+                                  Msg = #{addr => Dest,
                                              iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr);
+                                  socket:sendmsg(Sock, Msg);
 			     (Sock, Data, Dest, Hdrs) when is_list(Hdrs) ->
-				  CMsgHdrs = [#{level => Level,
+				  CMsgs = [#{level => Level,
 						type  => Type,
 						data  => Val} ||
 						 {Level, Type, Val} <- Hdrs],
-                                  MsgHdr   = #{addr => Dest,
-					       ctrl => CMsgHdrs,
+                                  Msg   = #{addr => Dest,
+					       ctrl => CMsgs,
 					       iov  => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  socket:sendmsg(Sock, Msg)
                           end,
                    Recv = fun(Sock) ->
                                   case socket:recvmsg(Sock) of
                                       {ok, #{addr := Source,
-                                             ctrl := CMsgHdrs,
+                                             ctrl := CMsgs,
                                              iov  := [Data]}} ->
-                                          {ok, {Source, CMsgHdrs, Data}};
+                                          {ok, {Source, CMsgs, Data}};
                                       {error, _} = ERROR ->
                                           ERROR
                                   end
@@ -22294,7 +22675,7 @@ api_opt_ipv6_mopts_udp(InitState) ->
          #{desc => "bind src",
            cmd  => fun(#{sock_src := Sock, lsa_src := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -22319,7 +22700,7 @@ api_opt_ipv6_mopts_udp(InitState) ->
          #{desc => "bind dst",
            cmd  => fun(#{sock_dst := Sock, lsa_dst := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -22384,10 +22765,10 @@ api_opt_ipv6_mopts_udp(InitState) ->
 			 recv     := Recv,
 			 opts     := Opts}) ->
                            case Recv(Sock) of
-                               {ok, {Src, CMsgHdrs, ?BASIC_REQ}}
-                                 when length(CMsgHdrs) =:= length(Opts)  ->
+                               {ok, {Src, CMsgs, ?BASIC_REQ}}
+                                 when length(CMsgs) =:= length(Opts)  ->
                                    ?SEV_IPRINT("Got (expected) cmsg headers: "
-					       "~n   ~p", [CMsgHdrs]),
+					       "~n   ~p", [CMsgs]),
 				   %% We should really verify the headers:
 				   %% values, types and so on...
                                    ok;
@@ -22515,7 +22896,8 @@ api_opt_tcp_congestion_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := LSock, lsa := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    ok;
                                {error, _} = ERROR ->
@@ -22693,7 +23075,8 @@ api_opt_tcp_cork_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := LSock, lsa := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    ok;
                                {error, _} = ERROR ->
@@ -22814,7 +23197,8 @@ api_opt_tcp_maxseg_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := LSock, lsa := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    ok;
                                {error, _} = ERROR ->
@@ -22940,7 +23324,8 @@ api_opt_tcp_nodelay_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    ok;
                                {error, _} = ERROR ->
@@ -23057,7 +23442,8 @@ api_opt_udp_cork_udp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    ok;
                                {error, _} = ERROR ->
@@ -23249,7 +23635,8 @@ api_to_connect_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -23615,7 +24002,7 @@ api_to_connect_tcp_await_timeout(To, ServerSA, Domain, ConLimit) ->
                                   ?FAIL({open, OReason})
                           end,
                       case socket:bind(S, LSA) of
-                          {ok, _} ->
+                          ok ->
                               S;
                           {error, BReason} ->
                               ?FAIL({bind, BReason})
@@ -23733,7 +24120,7 @@ api_to_accept_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -23857,7 +24244,7 @@ api_to_maccept_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, lsa := LSA} = _State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -24378,7 +24765,8 @@ api_to_receive_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{lsock := LSock, local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -24497,7 +24885,7 @@ api_to_receive_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -24713,7 +25101,7 @@ api_to_receive_udp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -24873,15 +25261,12 @@ reg_s_single_open_and_close_and_count(_Config) when is_list(_Config) ->
 
 
 reg_s_single_open_and_close_and_count() ->
+    socket:use_registry(true),
+
     %% We may have some sockets already existing.
     %% Make sure we dont count them when we test.
-    case socket:number_of() of
-        0 ->
-            socket:use_registry(true),
-            ok;
-        N ->
-            exit({unexpected_socket_registry_use, N, socket:which_sockets()})
-    end,
+    Existing = socket:which_sockets(),
+    N = length(Existing),
     SupportsIPV6 =
         case (catch has_support_ipv6()) of
             ok ->
@@ -24966,7 +25351,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% **** Total Number Of Sockets ****
 
-    NumSocks1 = length(Socks),
+    NumSocks1 = N + length(Socks),
     NumberOf1 = socket:number_of(),
 
     i("verify (total) number of sockets(1): ~w, ~w",
@@ -24983,7 +25368,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% inet, stream, tcp
     SiNumTCP = reg_si_num(InitSockInfos, inet, stream, tcp),
-    SrNumTCP = reg_sr_num(inet, stream, tcp),
+    SrNumTCP = reg_sr_num(Existing, inet, stream, tcp),
 
     i("verify number of IPv4 TCP sockets: ~w, ~w", [SiNumTCP, SrNumTCP]),
     case (SiNumTCP =:= SrNumTCP) of
@@ -24998,7 +25383,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% inet, dgram, udp
     SiNumUDP = reg_si_num(InitSockInfos, inet, dgram, udp),
-    SrNumUDP = reg_sr_num(inet, dgram, udp),
+    SrNumUDP = reg_sr_num(Existing, inet, dgram, udp),
 
     i("verify number of IPv4 UDP sockets: ~w, ~w", [SiNumUDP, SrNumUDP]),
     case (SiNumUDP =:= SrNumUDP) of
@@ -25013,7 +25398,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% inet, seqpacket, sctp
     SiNumSCTP = reg_si_num(InitSockInfos, inet, seqpacket, sctp),
-    SrNumSCTP = reg_sr_num(inet, seqpacket, sctp),
+    SrNumSCTP = reg_sr_num(Existing, inet, seqpacket, sctp),
 
     i("verify number of IPv4 SCTP sockets: ~w, ~w", [SiNumSCTP, SrNumSCTP]),
     case (SiNumSCTP =:= SrNumSCTP) of
@@ -25028,7 +25413,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% inet
     SiNumINET = reg_si_num(InitSockInfos, inet),
-    SrNumINET = reg_sr_num(inet),
+    SrNumINET = reg_sr_num(Existing, inet),
 
     i("verify number of IPv4 sockets: ~w, ~w", [SiNumINET, SrNumINET]),
     case (SiNumINET =:= SrNumINET) of
@@ -25043,7 +25428,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% inet6
     SiNumINET6 = reg_si_num(InitSockInfos, inet6),
-    SrNumINET6 = reg_sr_num(inet6),
+    SrNumINET6 = reg_sr_num(Existing, inet6),
 
     i("verify number of IPv6 sockets: ~w, ~w", [SiNumINET6, SrNumINET6]),
     case (SiNumINET6 =:= SrNumINET6) of
@@ -25058,7 +25443,7 @@ reg_s_single_open_and_close_and_count() ->
 
     %% local
     SiNumLOCAL = reg_si_num(InitSockInfos, local),
-    SrNumLOCAL = reg_sr_num(local),
+    SrNumLOCAL = reg_sr_num(Existing, local),
 
     i("verify number of Unix Domain Sockets sockets: ~w, ~w",
       [SiNumLOCAL, SrNumLOCAL]),
@@ -25080,16 +25465,24 @@ reg_s_single_open_and_close_and_count() ->
 
     ?SLEEP(1000),
 
-    NumSocks2 = 0,
     NumberOf2 = socket:number_of(),
 
-    i("verify number of sockets(2): ~w, ~w", [NumSocks2, NumberOf2]),
-    case (NumSocks2 =:= NumberOf2) of
+    i("verify number of sockets(2): ~w, ~w", [N, NumberOf2]),
+    case (N =:= NumberOf2) of
         true ->
             ok;
         false ->
-            reg_si_fail(wrong_number_of_sockets2, {NumSocks2, NumberOf2})
+            reg_si_fail(wrong_number_of_sockets2, {N, NumberOf2})
     end,
+
+    i("verify pre-existing sockets(2)", []),
+    case socket:which_sockets() of
+        Existing ->
+            ok;
+        OtherSockets ->
+            reg_si_fail(wrong_sockets2, {Existing, OtherSockets})
+    end,
+
     socket:use_registry(false),
     ok.
 
@@ -25137,27 +25530,27 @@ reg_si_num2(F, SocksInfo) ->
     length(lists:filter(F, SocksInfo)).
 
 
-reg_sr_num(Domain)
+reg_sr_num(Existing, Domain)
   when ((Domain =:= inet) orelse (Domain =:= inet6)) ->
-    length(socket:which_sockets(Domain));
-reg_sr_num(Domain)
+    length(socket:which_sockets(Domain) -- Existing);
+reg_sr_num(Existing, Domain)
   when (Domain =:= local) ->
-    reg_sr_num(Domain, undefined, undefined);
-reg_sr_num(Type)
+    reg_sr_num(Existing, Domain, undefined, undefined);
+reg_sr_num(Existing, Type)
   when ((Type =:= stream) orelse (Type =:= dgram) orelse (Type =:= seqpacket)) ->
-    length(socket:which_sockets(Type));
-reg_sr_num(Proto)
+    length(socket:which_sockets(Type) -- Existing);
+reg_sr_num(Existing, Proto)
   when ((Proto =:= sctp) orelse (Proto =:= tcp) orelse (Proto =:= udp)) ->
-    length(socket:which_sockets(Proto)).
+    length(socket:which_sockets(Proto) -- Existing).
 
-reg_sr_num(Domain, undefined, undefined) ->
+reg_sr_num(Existing, Domain, undefined, undefined) ->
     F = fun(#{domain := D}) when (D =:= Domain) ->
                 true;
            (_X) ->
                 false
         end,
-    reg_sr_num2(F);
-reg_sr_num(Domain, Type, Proto) ->
+    reg_sr_num2(Existing, F);
+reg_sr_num(Existing, Domain, Type, Proto) ->
     F = fun(#{domain   := D,
               type     := T,
               protocol := P}) when (D =:= Domain) andalso
@@ -25169,10 +25562,10 @@ reg_sr_num(Domain, Type, Proto) ->
                 %%   "~n   ~p", [_X]),
                 false
         end,
-    reg_sr_num2(F).
+    reg_sr_num2(Existing, F).
 
-reg_sr_num2(F) ->
-    length(socket:which_sockets(F)).
+reg_sr_num2(Existing, F) ->
+    length(socket:which_sockets(F) -- Existing).
 
 
 
@@ -25662,7 +26055,7 @@ sc_lc_receive_response_tcp(InitState) ->
                            ?SEV_IPRINT("bind to LSA: "
                                        "~n   ~p", [LSA]),
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
@@ -25670,7 +26063,8 @@ sc_lc_receive_response_tcp(InitState) ->
                       (#{lsock := LSock,
                          lsa   := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -25910,7 +26304,7 @@ sc_lc_receive_response_tcp(InitState) ->
                            ?SEV_IPRINT("bind to LSA: "
                                        "~n   ~p", [LSA]),
                            case sock_bind(Sock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -26351,7 +26745,7 @@ sc_lc_receive_response_udp(InitState) ->
          #{desc => "bind socket",
            cmd  => fun(#{sock := Sock, local_sa := LSA}) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ?SEV_IPRINT("src bound"),
                                    ok;
                                {error, Reason} = ERROR ->
@@ -26945,7 +27339,7 @@ sc_lc_acceptor_response_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -27422,7 +27816,7 @@ sc_rc_receive_response_tcp(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
@@ -27430,7 +27824,8 @@ sc_rc_receive_response_tcp(InitState) ->
                       (#{lsock    := LSock,
                          local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -28154,7 +28549,7 @@ sc_rc_tcp_client_bind(Sock, Domain) ->
     i("sc_rc_tcp_client_bind -> entry"),
     LSA = which_local_socket_addr(Domain),
     case socket:bind(Sock, LSA) of
-        {ok, _} ->
+        ok ->
             case socket:sockname(Sock) of
                 {ok, #{family := local, path := Path}} ->
                     Path;
@@ -28471,14 +28866,15 @@ sc_rs_send_shutdown_receive_tcp(InitState) ->
                          lsock    := LSock,
                          local_sa := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -29080,7 +29476,7 @@ sc_rs_tcp_client_bind(Sock, Domain) ->
     i("sc_rs_tcp_client_bind -> entry"),
     LSA = which_local_socket_addr(Domain),
     case socket:bind(Sock, LSA) of
-        {ok, _} ->
+        ok ->
             case socket:sockname(Sock) of
                 {ok, #{family := local, path := Path}} ->
                     Path;
@@ -29239,16 +29635,17 @@ sc_rs_recvmsg_send_shutdown_receive_tcp4(_Config) when is_list(_Config) ->
                    MsgData   = ?DATA,
                    Recv      = fun(Sock) ->
                                        case socket:recvmsg(Sock) of
-                                           {ok, #{addr  := undefined,
-                                                  iov   := [Data]}} ->
+                                           {ok, #{iov   := [Data]}} ->
                                                {ok, Data};
+                                           {ok, #{addr  := _} = Msg} ->
+                                               {error, {msg, Msg}};
                                            {error, _} = ERROR ->
                                                ERROR
                                        end
                                end,
                    Send      = fun(Sock, Data) when is_binary(Data) ->
-                                  MsgHdr = #{iov => [Data]},
-                                  socket:sendmsg(Sock, MsgHdr)
+                                  Msg = #{iov => [Data]},
+                                  socket:sendmsg(Sock, Msg)
                                end,
                    InitState = #{domain => inet,
                                  proto  => tcp,
@@ -29278,16 +29675,17 @@ sc_rs_recvmsg_send_shutdown_receive_tcp6(_Config) when is_list(_Config) ->
                    MsgData   = ?DATA,
                    Recv      = fun(Sock) ->
                                        case socket:recvmsg(Sock) of
-                                           {ok, #{addr  := undefined,
-                                                  iov   := [Data]}} ->
+                                           {ok, #{iov   := [Data]}} ->
                                                {ok, Data};
+                                           {ok, #{addr  := _} = Msg} ->
+                                               {error, {msg, Msg}};
                                            {error, _} = ERROR ->
                                                ERROR
                                        end
                                end,
                    Send      = fun(Sock, Data) when is_binary(Data) ->
-                                       MsgHdr = #{iov => [Data]},
-                                       socket:sendmsg(Sock, MsgHdr)
+                                       Msg = #{iov => [Data]},
+                                       socket:sendmsg(Sock, Msg)
                                end,
                    InitState = #{domain => inet6,
                                  proto  => tcp,
@@ -29320,22 +29718,25 @@ sc_rs_recvmsg_send_shutdown_receive_tcpL(_Config) when is_list(_Config) ->
                    Recv      = fun(Sock) ->
                                        case socket:recvmsg(Sock) of
                                            %% On some platforms, the address
-                                           %% is *not* provided (e.g. FreeBSD)
-                                           {ok, #{addr  := undefined,
-                                                  iov   := [Data]}} ->
-                                               {ok, Data};
-                                           %% On some platforms, the address
                                            %% *is* provided (e.g. linux)
                                            {ok, #{addr  := #{family := local},
                                                   iov   := [Data]}} ->
                                                {ok, Data};
+                                           {ok, #{addr := _} = Msg} ->
+                                               {error, {msg, Msg}};
+                                           %% On some platforms, the address
+                                           %% is *not* provided (e.g. FreeBSD)
+                                           {ok, #{iov   := [Data]}} ->
+                                               {ok, Data};
+                                           {ok, Msg} ->
+                                               {error, {msg, Msg}};
                                            {error, _} = ERROR ->
                                                ERROR
                                        end
                                end,
                    Send      = fun(Sock, Data) when is_binary(Data) ->
-                                       MsgHdr = #{iov => [Data]},
-                                       socket:sendmsg(Sock, MsgHdr)
+                                       Msg = #{iov => [Data]},
+                                       socket:sendmsg(Sock, Msg)
                                end,
                    InitState = #{domain => local,
                                  proto  => default,
@@ -29432,16 +29833,15 @@ traffic_sendmsg_and_recvmsg_counters_tcp4(_Config) when is_list(_Config) ->
                                  proto  => tcp,
                                  recv   => fun(S) ->
                                                    case socket:recvmsg(S) of
-                                                       {ok, #{addr := _Source,
-                                                              iov  := [Data]}} ->
+                                                       {ok, #{iov  := [Data]}} ->
                                                            {ok, Data};
                                                        {error, _} = ERROR ->
                                                            ERROR
                                                    end
                                            end,
                                  send   => fun(S, Data) ->
-                                                   MsgHdr = #{iov => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   Msg = #{iov => [Data]},
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_tcp(InitState)
            end).
@@ -29466,16 +29866,15 @@ traffic_sendmsg_and_recvmsg_counters_tcp6(_Config) when is_list(_Config) ->
                                  proto  => tcp,
                                  recv   => fun(S) ->
                                                    case socket:recvmsg(S) of
-                                                       {ok, #{addr := _Source,
-                                                              iov  := [Data]}} ->
+                                                       {ok, #{iov  := [Data]}} ->
                                                            {ok, Data};
                                                        {error, _} = ERROR ->
                                                            ERROR
                                                    end
                                            end,
                                  send   => fun(S, Data) ->
-                                                   MsgHdr = #{iov => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   Msg = #{iov => [Data]},
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_tcp(InitState)
            end).
@@ -29500,16 +29899,15 @@ traffic_sendmsg_and_recvmsg_counters_tcpL(_Config) when is_list(_Config) ->
                                  proto  => default,
                                  recv   => fun(S) ->
                                                    case socket:recvmsg(S) of
-                                                       {ok, #{addr := _Source,
-                                                              iov  := [Data]}} ->
+                                                       {ok, #{iov  := [Data]}} ->
                                                            {ok, Data};
                                                        {error, _} = ERROR ->
                                                            ERROR
                                                    end
                                            end,
                                  send   => fun(S, Data) ->
-                                                   MsgHdr = #{iov => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   Msg = #{iov => [Data]},
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_tcp(InitState)
            end).
@@ -29554,7 +29952,7 @@ traffic_send_and_recv_tcp(InitState) ->
                          lsock    := LSock,
                          local_sa := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
@@ -29562,7 +29960,8 @@ traffic_send_and_recv_tcp(InitState) ->
                       (#{lsock    := LSock,
                          local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -29936,7 +30335,7 @@ traffic_send_and_recv_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -30659,9 +31058,9 @@ traffic_sendmsg_and_recvmsg_counters_udp4(_Config) when is_list(_Config) ->
                                                    end
                                            end,
                                  send   => fun(S, Data, Dest) ->
-                                                   MsgHdr = #{addr => Dest,
+                                                   Msg = #{addr => Dest,
                                                               iov  => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_udp(InitState)
            end).
@@ -30694,9 +31093,9 @@ traffic_sendmsg_and_recvmsg_counters_udp6(_Config) when is_list(_Config) ->
                                                    end
                                            end,
                                  send   => fun(S, Data, Dest) ->
-                                                   MsgHdr = #{addr => Dest,
+                                                   Msg = #{addr => Dest,
                                                               iov  => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_udp(InitState)
            end).
@@ -30729,9 +31128,9 @@ traffic_sendmsg_and_recvmsg_counters_udpL(_Config) when is_list(_Config) ->
                                                    end
                                            end,
                                  send   => fun(S, Data, Dest) ->
-                                                   MsgHdr = #{addr => Dest,
+                                                   Msg = #{addr => Dest,
                                                               iov  => [Data]},
-                                                   socket:sendmsg(S, MsgHdr)
+                                                   socket:sendmsg(S, Msg)
                                            end},
                    ok = traffic_send_and_recv_udp(InitState)
            end).
@@ -30774,7 +31173,7 @@ traffic_send_and_recv_udp(InitState) ->
                          sock     := Sock,
                          local_sa := LSA} = _State) ->
                            case socket:bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
@@ -30782,7 +31181,8 @@ traffic_send_and_recv_udp(InitState) ->
                       (#{sock     := LSock,
                          local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -31092,7 +31492,7 @@ traffic_send_and_recv_udp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, local_sa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -31666,7 +32066,7 @@ traffic_send_and_recv_chunks_tcp(InitState) ->
                          lsock    := LSock,
                          local_sa := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
@@ -31674,7 +32074,8 @@ traffic_send_and_recv_chunks_tcp(InitState) ->
                       (#{lsock    := LSock,
                          local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -32565,7 +32966,7 @@ traffic_snr_tcp_client_bind(Sock, Domain) ->
     i("traffic_snr_tcp_client_bind -> entry"),
     LSA = which_local_socket_addr(Domain),
     case socket:bind(Sock, LSA) of
-        {ok, _} ->
+        ok ->
             case socket:sockname(Sock) of
                 {ok, #{family := local, path := Path}} ->
                     Path;
@@ -33524,15 +33925,18 @@ traffic_ping_pong_sendmsg_and_recvmsg_tcp(#{domain := local} = InitState) ->
     Recv = fun(Sock, Sz)   -> 
                    case socket:recvmsg(Sock, Sz, 0) of
                        %% On some platforms, the address
-                       %% is *not* provided (e.g. FreeBSD)
-                       {ok, #{addr  := undefined,
-                              iov   := [Data]}} ->
-                           {ok, Data};
-                       %% On some platforms, the address
                        %% *is* provided (e.g. linux)
                        {ok, #{addr  := #{family := local},
                               iov   := [Data]}} ->
                            {ok, Data};
+                       {ok, #{addr := _} = Msg} ->
+                           {error, {msg, Msg}};
+                       %% On some platforms, the address
+                       %% is *not* provided (e.g. FreeBSD)
+                       {ok, #{iov   := [Data]}} ->
+                           {ok, Data};
+                       {ok, Msg} ->
+                           {error, {msg, Msg}};
                        {error, _} = ERROR ->
                            ERROR
                    end
@@ -33542,9 +33946,10 @@ traffic_ping_pong_sendmsg_and_recvmsg_tcp(#{domain := local} = InitState) ->
 traffic_ping_pong_sendmsg_and_recvmsg_tcp(InitState) ->
     Recv = fun(Sock, Sz)   -> 
                    case socket:recvmsg(Sock, Sz, 0) of
-                       {ok, #{addr  := undefined,
-                              iov   := [Data]}} ->
+                       {ok, #{iov   := [Data]}} ->
                            {ok, Data};
+                       {ok, Msg} ->
+                           {error, {msg, Msg}};
                        {error, _} = ERROR ->
                            ERROR
                    end
@@ -33554,11 +33959,11 @@ traffic_ping_pong_sendmsg_and_recvmsg_tcp(InitState) ->
 
 traffic_ping_pong_sendmsg_and_recvmsg_tcp2(InitState) ->
     Send = fun(Sock, Data) when is_binary(Data) ->
-                   MsgHdr = #{iov => [Data]},
-                   socket:sendmsg(Sock, MsgHdr);
+                   Msg = #{iov => [Data]},
+                   socket:sendmsg(Sock, Msg);
               (Sock, Data) when is_list(Data) -> %% We assume iovec...
-                   MsgHdr = #{iov => Data},
-                   socket:sendmsg(Sock, MsgHdr)
+                   Msg = #{iov => Data},
+                   socket:sendmsg(Sock, Msg)
            end,
     InitState2 = InitState#{send => Send}, % Send function
     traffic_ping_pong_send_and_receive_tcp(InitState2).
@@ -33641,14 +34046,15 @@ traffic_ping_pong_send_and_receive_tcp2(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, local_sa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    ?SEV_IPRINT("bound to port: ~w", [Port]),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
@@ -34386,7 +34792,7 @@ tpp_tcp_client_sock_open(Domain, Proto, BufInit) ->
 tpp_tcp_client_sock_bind(Sock, Domain) ->
     LSA = which_local_socket_addr(Domain),
     case socket:bind(Sock, LSA) of
-        {ok, _} ->
+        ok ->
             case socket:sockname(Sock) of
                 {ok, #{family := local, path := Path}} ->
                     Path;
@@ -34522,11 +34928,11 @@ traffic_ping_pong_sendto_and_recvfrom_udp(InitState) ->
 
 traffic_ping_pong_sendmsg_and_recvmsg_udp(InitState) ->
     Send = fun(Sock, Data, Dest) when is_binary(Data) ->
-                   MsgHdr = #{addr => Dest, iov => [Data]},
-                   socket:sendmsg(Sock, MsgHdr);
+                   Msg = #{addr => Dest, iov => [Data]},
+                   socket:sendmsg(Sock, Msg);
               (Sock, Data, Dest) when is_list(Data) -> %% We assume iovec...
-                   MsgHdr = #{addr => Dest, iov => Data},
-                   socket:sendmsg(Sock, MsgHdr)
+                   Msg = #{addr => Dest, iov => Data},
+                   socket:sendmsg(Sock, Msg)
            end,
     Recv = fun(Sock, Sz)   ->
                    case socket:recvmsg(Sock, Sz, 0) of
@@ -34604,14 +35010,15 @@ traffic_ping_pong_send_and_receive_udp2(InitState) ->
            cmd  => fun(#{domain := local,
                          sock := Sock, local_sa := LSA} = _State) ->
                            case socket:bind(Sock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{sock := Sock, local_sa := LSA} = State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(Sock),
                                    {ok, State#{port => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -35348,7 +35755,7 @@ tpp_udp_sock_open(Domain, Proto, BufInit) ->
 tpp_udp_sock_bind(Sock, Domain) ->
     LSA = which_local_socket_addr(Domain),
     case socket:bind(Sock, LSA) of
-        {ok, _} ->
+        ok ->
             ok;
         {error, Reason} ->
             exit({bind, Reason})
@@ -42104,14 +42511,15 @@ otp16359_maccept_tcp(InitState) ->
                          lsock  := LSock,
                          lsa    := LSA} = _State) ->
                            case socket:bind(LSock, LSA) of
-                               {ok, _} ->
+                               ok ->
                                    ok; % We do not care about the port for local
                                {error, _} = ERROR ->
                                    ERROR
                            end;
                       (#{lsock := LSock, lsa := LSA} = State) ->
                            case sock_bind(LSock, LSA) of
-                               {ok, Port} ->
+                               ok ->
+                                   Port = sock_port(LSock),
                                    {ok, State#{lport => Port}};
                                {error, _} = ERROR ->
                                    ERROR
@@ -42295,7 +42703,7 @@ otp16359_maccept_tcp(InitState) ->
          #{desc => "bind to local address",
            cmd  => fun(#{sock := Sock, lsa := LSA} = _State) ->
                            case sock_bind(Sock, LSA) of
-                               {ok, _Port} ->
+                               ok ->
                                    ok;
                                {error, _} = ERROR ->
                                    ERROR
@@ -42746,7 +43154,7 @@ sock_open(Domain, Type, Proto) ->
 
 sock_bind(Sock, LSA) ->
     try socket:bind(Sock, LSA) of
-        {ok, _} = OK ->
+        ok = OK ->
             OK;
         {error, eaddrnotavail = Reason} ->
             ?SEV_IPRINT("Address not available"),
@@ -42826,7 +43234,7 @@ ensure_unique_path(Path) ->
             %% If we have several process in paralell trying to create
             %% (unique) path's, then we are in trouble. To *really* be
             %% on the safe side we should have a (central) path registry...
-            Path
+            encode_path(Path)
     end.
 
 ensure_unique_path(Path, ID) when (ID < 100) -> % If this is not enough...
@@ -42835,11 +43243,13 @@ ensure_unique_path(Path, ID) when (ID < 100) -> % If this is not enough...
         {ok, _} -> % Ouch, this also existed, increment and try again
             ensure_unique_path(Path, ID + 1);
         {error, _} -> % We assume this means it does not exist yet...
-            NewPath
+            encode_path(NewPath)
     end;
 ensure_unique_path(_, _) -> 
     skip("Could not create unique path").
-    
+
+encode_path(Path) ->
+    unicode:characters_to_binary(Path, file:native_name_encoding()).
             
 which_local_socket_addr(local = Domain) ->
     #{family => Domain,
@@ -43098,27 +43508,12 @@ is_any_options_supported(Options) ->
 
 %% --- Send flag test functions ---
 
-has_support_send_flag_oob() ->
-    has_support_send_flag(oob).
-
-has_support_send_flag(Flag) ->
-    has_support_send_or_recv_flag("Send", send_flags, Flag).
-
-has_support_recv_flag_oob() ->
-    has_support_recv_flag(oob).
-
-has_support_recv_flag_peek() ->
-    has_support_recv_flag(peek).
-
-has_support_recv_flag(Flag) ->
-    has_support_send_or_recv_flag("Recv", recv_flags, Flag).
-
-has_support_send_or_recv_flag(Pre, Key, Flag) ->
-    case socket:is_supported(Key, Flag) of
+has_support_msg_flag(Flag) ->
+    case socket:is_supported(msg_flags, Flag) of
         true ->
             ok;
         false ->
-            skip(?F("~s Flag ~w *Not* Supported", [Pre, Flag]))
+            skip(?F("Message flag ~w *Not* Supported", [Flag]))
     end.
 
 
@@ -43213,6 +43608,9 @@ has_support_sctp() ->
     case os:type() of
         {win32, _} ->
             skip("Not supported");
+        {unix, netbsd} ->
+            %% XXX We will have to investigate this later...
+            skip("Not supported");
         _ ->
             case socket:is_supported(sctp) of
                 true ->
@@ -43236,24 +43634,27 @@ has_support_ipv6() ->
 unlink_path(Path) ->
     unlink_path(Path, fun() -> ok end, fun() -> ok end).
 
-unlink_path(Path, Success, Failure) when is_list(Path) andalso 
-                                         is_function(Success, 0) andalso
-                                         is_function(Failure, 0) ->
-    ?SEV_IPRINT("try unlink path: "
-                "~n   ~s", [Path]),
-    case os:cmd("unlink " ++ Path) of
-        "" ->
-            ?SEV_IPRINT("path unlinked: "
-                        "~n   Path: ~s", [Path]),
-            Success();
-        Result ->
-            ?SEV_EPRINT("unlink maybe failed: "
-                        "~n   Path: ~s"
-                        "~n   Res:  ~s", [Path, Result]),
-            Failure()
-    end;
-unlink_path(_, _, _) ->
-    ok.
+unlink_path(Path, Success, Failure)
+  when is_function(Success, 0), is_function(Failure, 0) ->
+    case Path of
+        undefined ->
+            ?SEV_IPRINT("not a path to unlink"),
+                    Success();
+        _ ->
+            ?SEV_IPRINT("try unlink path: "
+                        "~n   ~s", [Path]),
+            case file:delete(Path) of
+                ok ->
+                    ?SEV_IPRINT("path unlinked: "
+                                "~n   Path: ~s", [Path]),
+                    Success();
+                Error ->
+                    ?SEV_EPRINT("unlink failed: "
+                                "~n   Path: ~s"
+                                "~n   Res:  ~p", [Path, Error]),
+                    Failure()
+            end
+    end.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -44436,6 +44837,20 @@ process_win_system_info([H|T], Acc) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+nowait(Config) ->
+    case lists:member({select_handle, true}, Config) of
+        true ->
+            make_ref();
+        false ->
+            nowait
+    end.
+
+sock_port(S) ->
+    case socket:sockname(S) of
+        {ok, #{port := Port}} -> Port;
+        {ok, #{}}             -> undefined
+    end.
 
 l2a(S) when is_list(S) ->
     list_to_atom(S).

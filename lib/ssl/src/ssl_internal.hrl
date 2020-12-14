@@ -137,7 +137,7 @@
           crl_cache                  => {{ssl_crl_cache, {internal, []}}, [versions]},
           crl_check                  => {false,     [versions]},
           customize_hostname_check   => {[],        [versions]},
-          depth                      => {1,         [versions]},
+          depth                      => {10,         [versions]},
           dh                         => {undefined, [versions]},
           dhfile                     => {undefined, [versions]},
           eccs                       => {undefined, [versions]},
@@ -158,6 +158,14 @@
           max_fragment_length        => {undefined, [versions]},
           next_protocol_selector     => {undefined, [versions]},
           next_protocols_advertised  => {undefined, [versions]},
+          %% If enable OCSP stapling
+          ocsp_stapling              => {false, [versions]},
+          %% Optional arg, if give suggestion of OCSP responders
+          ocsp_responder_certs       => {[], [versions,
+                                              ocsp_stapling]},
+          %% Optional arg, if add nonce extension in request
+          ocsp_nonce                 => {true, [versions,
+                                                ocsp_stapling]},
           padding_check              => {true,      [versions]},
           partial_chain              => {fun(_) -> unknown_ca end, [versions]},
           password                   => {"",        [versions]},
@@ -167,6 +175,7 @@
           reuse_session              => {undefined, [versions]},
           reuse_sessions             => {true,      [versions]},
           secure_renegotiate         => {true,      [versions]},
+          keep_secrets               => {false,     [versions]},
           server_name_indication     => {undefined, [versions]},
           session_tickets            => {disabled,     [versions]},
           signature_algs             => {undefined, [versions]},
@@ -183,15 +192,15 @@
                                                        partial_chain]},
           verify_fun                 =>
               {
-               {fun(_,{bad_cert, _}, UserState) ->
+               {fun(_, {bad_cert, _}, UserState) ->
                         {valid, UserState};
-                   (_,{extension, #'Extension'{critical = true}}, UserState) ->
+                   (_, {extension, #'Extension'{critical = true}}, UserState) ->
                         %% This extension is marked as critical, so
                         %% certificate verification should fail if we don't
                         %% understand the extension.  However, this is
                         %% `verify_none', so let's accept it anyway.
                         {valid, UserState};
-                   (_,{extension, _}, UserState) ->
+                   (_, {extension, _}, UserState) ->
                         {unknown, UserState};
                    (_, valid, UserState) ->
                         {valid, UserState};

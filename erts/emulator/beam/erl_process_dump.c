@@ -36,6 +36,7 @@
 #define ERTS_WANT_EXTERNAL_TAGS
 #include "external.h"
 #include "erl_proc_sig_queue.h"
+#include "beam_common.h"
 #include "erl_global_literals.h"
 
 #define PTR_FMT "%bpX"
@@ -50,11 +51,11 @@ static void dump_element_nl(fmtfn_t to, void *to_arg, Eterm x);
 static int stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp,
 			      int yreg);
 static void stack_trace_dump(fmtfn_t to, void *to_arg, Eterm* sp);
-static void print_function_from_pc(fmtfn_t to, void *to_arg, BeamInstr* x);
+static void print_function_from_pc(fmtfn_t to, void *to_arg, ErtsCodePtr x);
 static void heap_dump(fmtfn_t to, void *to_arg, Eterm x);
 static void dump_binaries(fmtfn_t to, void *to_arg, Binary* root);
 void erts_print_base64(fmtfn_t to, void *to_arg,
-                       byte* src, Uint size);
+                       const byte* src, Uint size);
 static void dump_externally(fmtfn_t to, void *to_arg, Eterm term);
 static void mark_literal(Eterm* ptr);
 static void init_literal_areas(void);
@@ -64,10 +65,6 @@ static void dump_module_literals(fmtfn_t to, void *to_arg,
                                  ErtsLiteralArea* lit_area);
 
 static Binary* all_binaries;
-
-extern BeamInstr beam_apply[];
-extern BeamInstr beam_exit[];
-extern BeamInstr beam_continue_exit[];
 
 void
 erts_deep_process_dump(fmtfn_t to, void *to_arg)
@@ -431,23 +428,30 @@ stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp, int yreg)
 }
 
 static void
-print_function_from_pc(fmtfn_t to, void *to_arg, BeamInstr* x)
+print_function_from_pc(fmtfn_t to, void *to_arg, ErtsCodePtr x)
 {
-    ErtsCodeMFA* cmfa = find_function_from_pc(x);
+    const ErtsCodeMFA* cmfa = erts_find_function_from_pc(x);
+
     if (cmfa == NULL) {
         if (x == beam_exit) {
             erts_print(to, to_arg, "<terminate process>");
         } else if (x == beam_continue_exit) {
             erts_print(to, to_arg, "<continue terminate process>");
-        } else if (x == beam_apply+1) {
+        } else if (x == beam_normal_exit) {
             erts_print(to, to_arg, "<terminate process normally>");
-        } else {
+        }
+        else {
             erts_print(to, to_arg, "unknown function");
         }
     } else {
-	erts_print(to, to_arg, "%T:%T/%bpu + %bpu",
-		   cmfa->module, cmfa->function, cmfa->arity,
-                   (x-(BeamInstr*)cmfa) * sizeof(Eterm));
+        const char *mfa_addr, *cp_addr;
+
+        mfa_addr = (const char*)cmfa;
+        cp_addr = (const char*)x;
+
+        erts_print(to, to_arg, "%T:%T/%bpu + %bpu",
+                   cmfa->module, cmfa->function, cmfa->arity,
+                   cp_addr - mfa_addr);
     }
 }
 

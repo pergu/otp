@@ -28,6 +28,7 @@
 #include "erl_vm.h"
 #include "global.h"
 #include "erl_process.h"
+#include "beam_file.h"
 #include "big.h"
 #include "bif.h"
 #include "erl_binary.h"
@@ -54,12 +55,11 @@
 #include "erl_io_queue.h"
 #define ERTS_WANT_TIMER_WHEEL_API
 #include "erl_time.h"
-#ifdef HIPE
-#  include "hipe_mode_switch.h"
-#endif
+#include "atom.h"
 #define ERTS_WANT_NFUNC_SCHED_INTERNALS__
 #include "erl_nfunc_sched.h"
 #include "erl_proc_sig_queue.h"
+#include "erl_unicode.h"
 
 #undef M_TRIM_THRESHOLD
 #undef M_TOP_PAD
@@ -88,7 +88,7 @@ erts_heap_alloc(Process* p, Uint need, Uint xtra)
     if (p->space_verified && p->space_verified_from!=NULL
 	&& HEAP_TOP(p) >= p->space_verified_from
 	&& HEAP_TOP(p) + need <= p->space_verified_from + p->space_verified
-	&& HEAP_LIMIT(p) - HEAP_TOP(p) >= need) {
+	&& HeapWordsLeft(p) >= need) {
 
 	Uint consumed = need + (HEAP_TOP(p) - p->space_verified_from);
 	ASSERT(consumed <= p->space_verified);
@@ -2821,7 +2821,29 @@ tailrecur_ne:
 		    goto term_array;
 		}
 
-	    case EXTERNAL_PID_SUBTAG:
+	    case EXTERNAL_PID_SUBTAG: {
+		ExternalThing *ap;
+		ExternalThing *bp;
+                int i;
+
+		if(!is_external(b))
+		    goto not_equal;
+
+		ap = external_thing_ptr(a);
+		bp = external_thing_ptr(b);
+
+		if(ap->header != bp->header || ap->node != bp->node)
+                    goto not_equal;
+
+                ASSERT(external_data_words(a) == EXTERNAL_PID_DATA_WORDS);
+                ASSERT(external_data_words(b) == EXTERNAL_PID_DATA_WORDS);
+
+                for (i = 0; i < EXTERNAL_PID_DATA_WORDS; i++) {
+                    if (ap->data.ui[i] != bp->data.ui[i])
+                        goto not_equal;
+                }
+		goto pop_next;
+	    }
 	    case EXTERNAL_PORT_SUBTAG: {
 		ExternalThing *ap;
 		ExternalThing *bp;
@@ -2836,7 +2858,7 @@ tailrecur_ne:
 		    ASSERT(1 == external_data_words(a));
 		    ASSERT(1 == external_data_words(b));
 
-		    if (ap->data.ui[0] == bp->data.ui[0]) goto pop_next;
+                    if (ap->data.ui[0] == bp->data.ui[0]) goto pop_next;
 		}
 		break; /* not equal */
 	    }
@@ -3057,17 +3079,7 @@ not_equal:
  *   numbers < (characters) < atoms < refs < funs < ports < pids <
  *   tuples < maps < [] < conses < binaries.
  *
- * Note that characters are currently not implemented.
- *
  */
-
-/* cmp(Eterm a, Eterm b)
- *  For compatibility with HiPE - arith-based compare.
- */
-Sint cmp(Eterm a, Eterm b)
-{
-    return erts_cmp(a, b, 0, 0);
-}
 
 Sint erts_cmp_compound(Eterm a, Eterm b, int exact, int eq_only);
 
@@ -3182,26 +3194,52 @@ tailrecur_ne:
 	    CMP_NODES(anode, bnode);
 	    ON_CMP_GOTO((Sint)(adata - bdata));
 
-	case (_TAG_IMMED1_PID >> _TAG_PRIMARY_SIZE):
-	    if (is_internal_pid(b)) {
-		bnode = erts_this_node;
-		bdata = internal_pid_data(b);
-	    } else if (is_external_pid(b)) {
-		bnode = external_pid_node(b);
-		bdata = external_pid_data(b);
-	    } else {
-		a_tag = PID_DEF;
-		goto mixed_types;
-	    }
-	    anode = erts_this_node;
-	    adata = internal_pid_data(a);
+        case (_TAG_IMMED1_PID >> _TAG_PRIMARY_SIZE):
+            if (is_internal_pid(b)) {
+                adata = internal_pid_data(a);
+                bdata = internal_pid_data(b);
+                ON_CMP_GOTO((Sint)(adata - bdata));
+            }
+            else if (is_not_external_pid(b)) {
+                a_tag = PID_DEF;
+                goto mixed_types;
+            }
 
-	pid_common:
-	    if (adata != bdata) {
-		RETURN_NEQ(adata < bdata ? -1 : 1);
-	    }
+        pid_common:
+        {
+            Uint32 a_pid_num, a_pid_ser;
+            Uint32 b_pid_num, b_pid_ser;
+
+            if (is_internal_pid(a)) {
+                a_pid_num = internal_pid_number(a);
+                a_pid_ser = internal_pid_serial(a);
+                anode = erts_this_node;
+            }
+            else {
+                ASSERT(is_external_pid(a));
+                a_pid_num = external_pid_number(a);
+                a_pid_ser = external_pid_serial(a);
+                anode = external_pid_node(a);
+            }
+            if (is_internal_pid(b)) {
+                b_pid_num = internal_pid_number(b);
+                b_pid_ser = internal_pid_serial(b);
+                bnode = erts_this_node;
+            }
+            else {
+                ASSERT(is_external_pid(b));
+                b_pid_num = external_pid_number(b);
+                b_pid_ser = external_pid_serial(b);
+                bnode = external_pid_node(b);
+            }
+
+	    if (a_pid_ser != b_pid_ser)
+                RETURN_NEQ(a_pid_ser < b_pid_ser ? -1 : 1);
+            if (a_pid_num != b_pid_num)
+		RETURN_NEQ(a_pid_num < b_pid_num ? -1 : 1);
 	    CMP_NODES(anode, bnode);
 	    goto pop_next;
+        }
 	case (_TAG_IMMED1_SMALL >> _TAG_PRIMARY_SIZE):
 	    a_tag = SMALL_DEF;
 	    goto mixed_types;
@@ -3427,19 +3465,12 @@ tailrecur_ne:
 		    goto term_array;
 		}
 	    case (_TAG_HEADER_EXTERNAL_PID >> _TAG_PRIMARY_SIZE):
-		if (is_internal_pid(b)) {
-		    bnode = erts_this_node;
-		    bdata = internal_pid_data(b);
-		} else if (is_external_pid(b)) {
-		    bnode = external_pid_node(b);
-		    bdata = external_pid_data(b);
-		} else {
-		    a_tag = EXTERNAL_PID_DEF;
-		    goto mixed_types;
-		}
-		anode = external_pid_node(a);
-		adata = external_pid_data(a);
-		goto pid_common;
+		if (!is_pid(b)) {
+                    a_tag = EXTERNAL_PID_DEF;
+                    goto mixed_types;
+                }
+                goto pid_common;
+
 	    case (_TAG_HEADER_EXTERNAL_PORT >> _TAG_PRIMARY_SIZE):
 		if (is_internal_port(b)) {
 		    bnode = erts_this_node;
@@ -3921,7 +3952,7 @@ store_external_or_ref_(Uint **hpp, ErlOffHeap* oh, Eterm ns)
 	ASSERT(is_external(ns));
         erts_ref_node_entry(etp->node, 2, make_boxed(to_hp));
     }
-    else if (is_ordinary_ref_thing(from_hp))
+    else if (!is_magic_ref_thing(from_hp))
 	return make_internal_ref(to_hp);
     else {
 	ErtsMRefThing *mreft = (ErtsMRefThing *) from_hp;
@@ -4979,28 +5010,6 @@ Uint64 erts_timestamp_millis(void)
 #endif
 }
 
-void *
-erts_calc_stacklimit(char *prev_c, UWord stacksize)
-{
-    /*
-     * We *don't* want this function inlined, i.e., it is
-     * risky to call this function from another function
-     * in utils.c
-     */
-
-    UWord pagesize = erts_sys_get_page_size();
-    char c;
-    char *start;
-    if (&c > prev_c) {
-        start = (char *) ((((UWord) prev_c) / pagesize) * pagesize);
-        return (void *) (start + stacksize);
-    }
-    else {
-        start = (char *) (((((UWord) prev_c) - 1) / pagesize + 1) * pagesize);
-        return (void *) (start - stacksize);
-    }
-}
-
 /*
  * erts_check_below_limit() and
  * erts_check_above_limit() are put
@@ -5026,6 +5035,10 @@ erts_ptr_id(void *ptr)
     return ptr;
 }
 
+const void *erts_get_stacklimit() {
+    return ethr_get_stacklimit();
+}
+
 int erts_check_if_stack_grows_downwards(char *ptr)
 {
     char c;
@@ -5033,4 +5046,47 @@ int erts_check_if_stack_grows_downwards(char *ptr)
         return 1;
     else
         return 0;
+}
+
+
+/*
+ * Build a single {M,F,A,Loction} item to be part of
+ * a stack trace.
+ */
+Eterm*
+erts_build_mfa_item(FunctionInfo* fi, Eterm* hp, Eterm args, Eterm* mfa_p, Eterm loc)
+{
+    if (fi->loc != LINE_INVALID_LOCATION) {
+	Eterm tuple;
+	int line = LOC_LINE(fi->loc);
+	int file = LOC_FILE(fi->loc);
+	Eterm file_term = NIL;
+
+	if (file == 0) {
+	    Atom* ap = atom_tab(atom_val(fi->mfa->module));
+	    file_term = buf_to_intlist(&hp, ".erl", 4, NIL);
+	    file_term = buf_to_intlist(&hp, (char*)ap->name, ap->len, file_term);
+	} else {
+            file_term = erts_atom_to_string(&hp, (fi->fname_ptr)[file-1]);
+	}
+
+	tuple = TUPLE2(hp, am_line, make_small(line));
+	hp += 3;
+	loc = CONS(hp, tuple, loc);
+	hp += 2;
+	tuple = TUPLE2(hp, am_file, file_term);
+	hp += 3;
+	loc = CONS(hp, tuple, loc);
+	hp += 2;
+    }
+
+    if (is_list(args) || is_nil(args)) {
+	*mfa_p = TUPLE4(hp, fi->mfa->module, fi->mfa->function,
+                        args, loc);
+    } else {
+	Eterm arity = make_small(fi->mfa->arity);
+	*mfa_p = TUPLE4(hp, fi->mfa->module, fi->mfa->function,
+                        arity, loc);
+    }
+    return hp + 5;
 }

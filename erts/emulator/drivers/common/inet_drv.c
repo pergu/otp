@@ -1155,9 +1155,24 @@ typedef struct {
 
 #define TCP_MAX_PACKET_SIZE 0x4000000  /* 64 M */
 
-#define MAX_VSIZE 16		/* Max number of entries allowed in an I/O
-				 * vector sock_sendv().
-				 */
+/* Max number of entries allowed in an I/O vector sock_sendv(). */
+#if defined(__WIN32__)
+/* 
+ * Windows 95, 98, and ME is limited to 16, but we do not
+ * support those. Documentation unfortunately does not say
+ * anything about newer windows, so we guess 1024 which
+ * seems to be what most systems use...
+ */
+#define MAX_VSIZE 1024
+#elif !defined(NO_SYSCONF)
+static int iov_max;
+#define MAX_VSIZE iov_max
+#elif defined(IOV_MAX)
+#define MAX_VSIZE IOV_MAX
+#else
+/* POSIX require at least 16 */
+#define MAX_VSIZE 16
+#endif
 
 static int tcp_inet_init(void);
 static void tcp_inet_stop(ErlDrvData);
@@ -1501,7 +1516,7 @@ static const struct in6_addr in6addr_loopback =
 #endif /* HAVE_IN6 */
 
 /* XXX: is this a driver interface function ??? */
-void erts_exit(int n, char*, ...);
+void erts_exit(int n, const char*, ...);
 
 /*
  * Malloc wrapper,
@@ -4126,6 +4141,18 @@ static int inet_init()
 {
     if (!sock_init())
 	goto error;
+
+#if !defined(__WIN32__) && !defined(NO_SYSCONF)
+    iov_max = (int) sysconf(_SC_IOV_MAX);
+    if (iov_max < 0) {
+#ifdef IOV_MAX
+        iov_max = IOV_MAX;
+#else
+        iov_max = 16; /* min value required by POSIX */
+#endif
+    }
+    ASSERT(iov_max >= 16);
+#endif
 
     if (0 != erl_drv_tsd_key_create("inet_buffer_stack_key", &buffer_stack_key))
 	goto error;
@@ -6855,26 +6882,34 @@ static int inet_set_opts(inet_descriptor* desc, char* ptr, int len)
 
     if ( ((desc->stype == SOCK_STREAM) && IS_CONNECTED(desc)) ||
 	((desc->stype == SOCK_DGRAM) && IS_OPEN(desc))) {
+        int trigger_recv;
+
+        /* XXX: UDP sockets could also trigger immediate read here NIY */
+        trigger_recv =
+            (desc->stype==SOCK_STREAM) &&
+            !old_active &&
+            (desc->active == INET_ONCE || desc->active == INET_MULTI) &&
+            (desc->htype == old_htype);
+
+        if (trigger_recv) {
+            return 2;
+        }
 
 	if (desc->active != old_active) {
             /* Need to cancel the read_packet timer if we go from active to passive. */
             if (desc->active == INET_PASSIVE && desc->stype == SOCK_DGRAM)
                 driver_cancel_timer(desc->port);
-	    sock_select(desc, (FD_READ|FD_CLOSE), (desc->active>0));
+
+            sock_select(desc, (FD_READ|FD_CLOSE), (desc->active>0));
         }
 
 	/* XXX: UDP sockets could also trigger immediate read here NIY */
 	if ((desc->stype==SOCK_STREAM) && desc->active) {
 	    if (!old_active || (desc->htype != old_htype)) {
 		/* passive => active change OR header type change in active mode */
-		/* Return > 1 if only active changed to INET_ONCE -> direct read if
-		   header type is unchanged. */
-		/* XXX fprintf(stderr,"desc->htype == %d, old_htype == %d, 
-		   desc->active == %d, old_active == %d\r\n",(int)desc->htype, 
-		   (int) old_htype, (int) desc->active, (int) old_active );*/
-		return 1+(desc->htype == old_htype &&
-                          (desc->active == INET_ONCE || desc->active == INET_MULTI));
+		return 1;
 	    }
+
 	    return 0;
 	}
     }
@@ -9326,7 +9361,9 @@ static ErlDrvSSizeT inet_ctl(inet_descriptor* desc, int cmd, char* buf,
 	     * Same as above, but active changed to once w/o header type
 	     * change, so try a read instead of just deliver. 
 	     */
-	    tcp_recv((tcp_descriptor *) desc, 0);
+            if ((tcp_recv((tcp_descriptor *) desc, 0) >= 0) && desc->active) {
+                sock_select(desc, (FD_READ|FD_CLOSE), 1);
+            }
 	    return ctl_reply(INET_REP_OK, NULL, 0, rbuf, rsize);
 	}
     }
@@ -10462,6 +10499,11 @@ static void tcp_inet_send_timeout(ErlDrvData e, ErlDrvTermData dummy)
     if (desc->send_timeout_close) {
         tcp_desc_close(desc);
     }
+    /* Q: Why not keep port busy as send queue may still be full (ERL-1390)?
+     *
+     * A: If kept busy, a following send call would hang without a timeout
+     *    as it would get suspended in erlang:port_command waiting on busy port.
+     */
 }
 
 /*

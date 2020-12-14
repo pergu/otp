@@ -263,7 +263,11 @@ prologue_passes(Opts) ->
     passes_1(Ps, Opts).
 
 module_passes(Opts) ->
-    Ps0 = [{ssa_opt_type_start,
+    Ps0 = [{ssa_opt_bc_size,
+            fun({StMap, FuncDb}) ->
+                    {beam_ssa_bc_size:opt(StMap), FuncDb}
+            end},
+           {ssa_opt_type_start,
             fun({StMap, FuncDb}) ->
                     beam_ssa_type:opt_start(StMap, FuncDb)
             end}],
@@ -356,9 +360,10 @@ fdb_fs([#b_function{ args=Args,bs=Bs }=F | Fs], Exports, FuncDb0) ->
                                                   arg_types=ArgTypes }}
               end,
 
-    FuncDb = beam_ssa:fold_rpo(fun(_L, #b_blk{is=Is}, FuncDb) ->
+    RPO = beam_ssa:rpo(Bs),
+    FuncDb = beam_ssa:fold_blocks(fun(_L, #b_blk{is=Is}, FuncDb) ->
                                        fdb_is(Is, Id, FuncDb)
-                               end, FuncDb1, Bs),
+                               end, RPO, FuncDb1, Bs),
 
     fdb_fs(Fs, Exports, FuncDb);
 fdb_fs([], _Exports, FuncDb) ->
@@ -373,9 +378,10 @@ fdb_is([#b_set{op=call,
                                name=#b_literal{val=load_nif}},
                      _Path, _LoadInfo]} | _Is], _Caller, _FuncDb) ->
     throw(load_nif);
-fdb_is([#b_set{op=make_fun,
+fdb_is([#b_set{op=MakeFun,
                args=[#b_local{}=Callee | _]} | Is],
-       Caller, FuncDb) ->
+       Caller, FuncDb) when MakeFun =:= make_fun;
+                            MakeFun =:= old_make_fun ->
     %% The make_fun instruction's type depends on the return type of the
     %% function in question, so we treat this as a function call.
     fdb_is(Is, Caller, fdb_update(Caller, Callee, FuncDb));
@@ -452,7 +458,8 @@ ssa_opt_trim_unreachable({#opt_st{ssa=Blocks}=St, FuncDb}) ->
     {St#opt_st{ssa=beam_ssa:trim_unreachable(Blocks)}, FuncDb}.
 
 ssa_opt_merge_blocks({#opt_st{ssa=Blocks0}=St, FuncDb}) ->
-    Blocks = beam_ssa:merge_blocks(Blocks0),
+    RPO = beam_ssa:rpo(Blocks0),
+    Blocks = beam_ssa:merge_blocks(RPO, Blocks0),
     {St#opt_st{ssa=Blocks}, FuncDb}.
 
 %%%
@@ -468,10 +475,13 @@ ssa_opt_merge_blocks({#opt_st{ssa=Blocks0}=St, FuncDb}) ->
 ssa_opt_split_blocks({#opt_st{ssa=Blocks0,cnt=Count0}=St, FuncDb}) ->
     P = fun(#b_set{op={bif,element}}) -> true;
            (#b_set{op=call}) -> true;
+           (#b_set{op=bs_init_writable}) -> true;
            (#b_set{op=make_fun}) -> true;
+           (#b_set{op=old_make_fun}) -> true;
            (_) -> false
         end,
-    {Blocks,Count} = beam_ssa:split_blocks(P, Blocks0, Count0),
+    RPO = beam_ssa:rpo(Blocks0),
+    {Blocks,Count} = beam_ssa:split_blocks(RPO, P, Blocks0, Count0),
     {St#opt_st{ssa=Blocks,cnt=Count}, FuncDb}.
 
 %%%
@@ -1287,23 +1297,22 @@ ssa_opt_live({#opt_st{ssa=Linear0}=St, FuncDb}) ->
 live_opt([{L,Blk0}|Bs], LiveMap0, Blocks) ->
     Blk1 = beam_ssa_share:block(Blk0, Blocks),
     Successors = beam_ssa:successors(Blk1),
-    Live0 = live_opt_succ(Successors, L, LiveMap0, gb_sets:empty()),
+    Live0 = live_opt_succ(Successors, L, LiveMap0, cerl_sets:new()),
     {Blk,Live} = live_opt_blk(Blk1, Live0),
     LiveMap = live_opt_phis(Blk#b_blk.is, L, Live, LiveMap0),
     live_opt(Bs, LiveMap, Blocks#{L:=Blk});
 live_opt([], _, Acc) -> Acc.
 
 live_opt_succ([S|Ss], L, LiveMap, Live0) ->
-    Key = {S,L},
     case LiveMap of
-        #{Key:=Live} ->
+        #{{S,L}:=Live} ->
             %% The successor has a phi node, and the value for
             %% this block in the phi node is a variable.
-            live_opt_succ(Ss, L, LiveMap, gb_sets:union(Live, Live0));
+            live_opt_succ(Ss, L, LiveMap, cerl_sets:union(Live0, Live));
         #{S:=Live} ->
             %% No phi node in the successor, or the value for
             %% this block in the phi node is a literal.
-            live_opt_succ(Ss, L, LiveMap, gb_sets:union(Live, Live0));
+            live_opt_succ(Ss, L, LiveMap, cerl_sets:union(Live0, Live));
         #{} ->
             %% A peek_message block which has not been processed yet.
             live_opt_succ(Ss, L, LiveMap, Live0)
@@ -1321,7 +1330,7 @@ live_opt_phis(Is, L, Live0, LiveMap0) ->
             case [{P,V} || {#b_var{}=V,P} <- PhiArgs] of
                 [_|_]=PhiVars ->
                     PhiLive0 = rel2fam(PhiVars),
-                    PhiLive = [{{L,P},gb_sets:union(gb_sets:from_list(Vs), Live0)} ||
+                    PhiLive = [{{L,P},cerl_sets:union(cerl_sets:from_list(Vs), Live0)} ||
                                   {P,Vs} <- PhiLive0],
                     maps:merge(LiveMap, maps:from_list(PhiLive));
                 [] ->
@@ -1331,12 +1340,13 @@ live_opt_phis(Is, L, Live0, LiveMap0) ->
     end.
 
 live_opt_blk(#b_blk{is=Is0,last=Last}=Blk, Live0) ->
-    Live1 = gb_sets:union(Live0, gb_sets:from_ordset(beam_ssa:used(Last))),
+    Live1 = cerl_sets:union(Live0, cerl_sets:from_list(beam_ssa:used(Last))),
     {Is,Live} = live_opt_is(reverse(Is0), Live1, []),
     {Blk#b_blk{is=Is},Live}.
 
-live_opt_is([#b_set{op=phi,dst=Dst}=I|Is], Live, Acc) ->
-    case gb_sets:is_member(Dst, Live) of
+live_opt_is([#b_set{op=phi,dst=Dst}=I|Is], Live0, Acc) ->
+    Live = cerl_sets:del_element(Dst, Live0),
+    case cerl_sets:is_element(Dst, Live0) of
         true ->
             live_opt_is(Is, Live, [I|Acc]);
         false ->
@@ -1345,10 +1355,10 @@ live_opt_is([#b_set{op=phi,dst=Dst}=I|Is], Live, Acc) ->
 live_opt_is([#b_set{op={succeeded,guard},dst=SuccDst,args=[Dst]}=SuccI,
              #b_set{op=Op,dst=Dst}=I0|Is],
             Live0, Acc) ->
-    case {gb_sets:is_member(SuccDst, Live0),
-          gb_sets:is_member(Dst, Live0)} of
+    case {cerl_sets:is_element(SuccDst, Live0),
+          cerl_sets:is_element(Dst, Live0)} of
         {true, true} ->
-            Live = gb_sets:delete(SuccDst, Live0),
+            Live = cerl_sets:del_element(SuccDst, Live0),
             live_opt_is([I0|Is], Live, [SuccI|Acc]);
         {true, false} ->
             %% The result of the instruction before {succeeded,guard} is
@@ -1368,8 +1378,8 @@ live_opt_is([#b_set{op={succeeded,guard},dst=SuccDst,args=[Dst]}=SuccI,
                     I = I0#b_set{op=has_map_field,dst=SuccDst},
                     live_opt_is([I|Is], Live0, Acc);
                 _ ->
-                    Live1 = gb_sets:delete(SuccDst, Live0),
-                    Live = gb_sets:add(Dst, Live1),
+                    Live1 = cerl_sets:del_element(SuccDst, Live0),
+                    Live = cerl_sets:add_element(Dst, Live1),
                     live_opt_is([I0|Is], Live, [SuccI|Acc])
             end;
         {false, true} ->
@@ -1378,19 +1388,19 @@ live_opt_is([#b_set{op={succeeded,guard},dst=SuccDst,args=[Dst]}=SuccI,
             live_opt_is(Is, Live0, Acc)
     end;
 live_opt_is([#b_set{dst=Dst}=I|Is], Live0, Acc) ->
-    case gb_sets:is_member(Dst, Live0) of
+    case cerl_sets:is_element(Dst, Live0) of
         true ->
-            LiveUsed = gb_sets:from_ordset(beam_ssa:used(I)),
-            Live1 = gb_sets:union(Live0, LiveUsed),
-            Live = gb_sets:delete(Dst, Live1),
+            LiveUsed = cerl_sets:from_list(beam_ssa:used(I)),
+            Live1 = cerl_sets:union(Live0, LiveUsed),
+            Live = cerl_sets:del_element(Dst, Live1),
             live_opt_is(Is, Live, [I|Acc]);
         false ->
             case beam_ssa:no_side_effect(I) of
                 true ->
                     live_opt_is(Is, Live0, Acc);
                 false ->
-                    LiveUsed = gb_sets:from_ordset(beam_ssa:used(I)),
-                    Live = gb_sets:union(Live0, LiveUsed),
+                    LiveUsed = cerl_sets:from_list(beam_ssa:used(I)),
+                    Live = cerl_sets:union(Live0, LiveUsed),
                     live_opt_is(Is, Live, [I|Acc])
             end
     end;
@@ -1530,7 +1540,9 @@ bsm_skip_is([I0|Is], Extracted) ->
         #b_set{op=bs_match,
                dst=Ctx,
                args=[#b_literal{val=T}=Type,PrevCtx|Args0]}
-          when T =/= string, T =/= skip ->
+          when T =/= float, T =/= string, T =/= skip ->
+            %% Note that it is never safe to skip matching
+            %% of floats, even if the size is known to be correct.
             I = case cerl_sets:is_element(Ctx, Extracted) of
                     true ->
                         I0;
@@ -2179,7 +2191,9 @@ replace_last([_], Repl) -> [Repl];
 replace_last([I|Is], Repl) -> [I|replace_last(Is, Repl)].
 
 opt_ne_single_use(Var, {uses,Linear}) ->
-    Uses = beam_ssa:uses(maps:from_list(Linear)),
+    Blocks = maps:from_list(Linear),
+    RPO = beam_ssa:rpo(Blocks),
+    Uses = beam_ssa:uses(RPO, Blocks),
     opt_ne_single_use(Var, Uses);
 opt_ne_single_use(Var, Uses) when is_map(Uses) ->
     {case Uses of
@@ -2267,7 +2281,9 @@ do_ssa_opt_sink(Defs, #opt_st{ssa=Linear}=St) ->
 
     %% Calculate dominators.
     Blocks0 = maps:from_list(Linear),
-    {Dom,Numbering} = beam_ssa:dominators(Blocks0),
+    RPO = beam_ssa:rpo(Blocks0),
+    Preds = beam_ssa:predecessors(Blocks0),
+    {Dom, Numbering} = beam_ssa:dominators_from_predecessors(RPO, Preds),
 
     %% It is not safe to move get_tuple_element instructions to blocks
     %% that begin with certain instructions. It is also unsafe to move
@@ -2283,7 +2299,7 @@ do_ssa_opt_sink(Defs, #opt_st{ssa=Linear}=St) ->
     %% important precaution to avoid that lists:mapfoldl/3 keeps all previous
     %% versions of the accumulator alive until the end of the input list.
     Ps = partition_deflocs(DefLocs0, Defs, Blocks0),
-    DefLocs1 = filter_deflocs(Ps, Blocks0),
+    DefLocs1 = filter_deflocs(Ps, Preds, Blocks0),
     DefLocs = sort(DefLocs1),
 
     %% Now move all suitable get_tuple_element instructions to their
@@ -2345,13 +2361,13 @@ partition_dl_1([], _, Acc) ->
 partition_dl_1([_|_]=DLs, [], Acc) ->
     {reverse(Acc),DLs}.
 
-filter_deflocs([{Tuple,DefLoc0}|DLs], Blocks) ->
+filter_deflocs([{Tuple,DefLoc0}|DLs], Preds, Blocks) ->
     %% Input is a list of sinks of get_tuple_element instructions in
     %% execution order from the same tuple in the same clause.
     [{_,{_,First}}|_] = DefLoc0,
     Paths = find_paths_to_check(DefLoc0, First),
     WillGC0 = ordsets:from_list([FromTo || {{_,_}=FromTo,_} <- Paths]),
-    WillGC1 = [{{From,To},will_gc(From, To, Blocks, true)} ||
+    WillGC1 = [{{From,To},will_gc(From, To, Preds, Blocks, true)} ||
                   {From,To} <- WillGC0],
     WillGC = maps:from_list(WillGC1),
 
@@ -2363,17 +2379,17 @@ filter_deflocs([{Tuple,DefLoc0}|DLs], Blocks) ->
                   end, Paths),
 
     %% Avoid potentially harmful sinks.
-    DefLocGC = filter_gc_deflocs(DefLocGC0, Tuple, First, Blocks),
+    DefLocGC = filter_gc_deflocs(DefLocGC0, Tuple, First, Preds, Blocks),
 
     %% Construct the complete list of sink operations.
     DefLoc1 = DefLocGC ++ DefLocNoGC,
     [DL || {_,{_,{From,To}}=DL} <- DefLoc1, From =/= To] ++
-        filter_deflocs(DLs, Blocks);
-filter_deflocs([], _) -> [].
+        filter_deflocs(DLs, Preds, Blocks);
+filter_deflocs([], _, _) -> [].
 
 %% Use an heuristic to avoid harmful sinking in lists:mapfold/3 and
 %% similar functions.
-filter_gc_deflocs(DefLocGC, Tuple, First, Blocks) ->
+filter_gc_deflocs(DefLocGC, Tuple, First, Preds, Blocks) ->
     case DefLocGC of
         [] ->
             [];
@@ -2389,7 +2405,7 @@ filter_gc_deflocs(DefLocGC, Tuple, First, Blocks) ->
                     %% probably a win to sink this instruction.
                     DefLocGC;
                 false ->
-                    case will_gc(From, To, Blocks, false) of
+                    case will_gc(From, To, Preds, Blocks, false) of
                         false ->
                             %% There is no risk for recursive calls,
                             %% so it should be safe to
@@ -2419,16 +2435,17 @@ find_paths_to_check([{_,{_,To}}=Move|T], First) ->
     [{{First,To},Move}|find_paths_to_check(T, First)];
 find_paths_to_check([], _First) -> [].
 
-will_gc(From, To, Blocks, All) ->
-    will_gc(beam_ssa:rpo([From], Blocks), To, Blocks, All, #{From => false}).
+will_gc(From, To, Preds, Blocks, All) ->
+    Between = beam_ssa:between(From, To, Preds, Blocks),
+    will_gc_1(Between, To, Blocks, All, #{From => false}).
 
-will_gc([To|_], To, _Blocks, _All, WillGC) ->
+will_gc_1([To|_], To, _Blocks, _All, WillGC) ->
     map_get(To, WillGC);
-will_gc([L|Ls], To, Blocks, All, WillGC0) ->
+will_gc_1([L|Ls], To, Blocks, All, WillGC0) ->
     #b_blk{is=Is} = Blk = map_get(L, Blocks),
     GC = map_get(L, WillGC0) orelse will_gc_is(Is, All),
     WillGC = gc_update_successors(Blk, GC, WillGC0),
-    will_gc(Ls, To, Blocks, All, WillGC).
+    will_gc_1(Ls, To, Blocks, All, WillGC).
 
 will_gc_is([#b_set{op=call,args=Args}|Is], false) ->
     case Args of
@@ -2837,11 +2854,11 @@ unfold_lit_is([#b_set{op=call,
     end;
 unfold_lit_is([#b_set{op=Op,args=Args0}=I0|Is], LitMap, Count, Acc) ->
     %% Using a register instead of a literal is a clear win only for
-    %% `call` and `make_fun` instructions. Substituting into other
+    %% `call` and `old_make_fun` instructions. Substituting into other
     %% instructions is unlikely to be an improvement.
     Unfold = case Op of
                  call -> true;
-                 make_fun -> true;
+                 old_make_fun -> true;
                  _ -> false
              end,
     I = case Unfold of

@@ -20,11 +20,13 @@
 
 -module(maps).
 
--export([get/3, filter/2,fold/3,
+-export([get/3, filter/2, filtermap/2, fold/3,
          map/2, size/1, new/0,
          update_with/3, update_with/4,
          without/2, with/2,
-         iterator/1, next/1]).
+         iterator/1, next/1,
+         intersect/2, intersect_with/3,
+         merge_with/3]).
 
 %% BIFs
 -export([get/2, find/2, from_list/1,
@@ -65,6 +67,61 @@ find(_,_) -> erlang:nif_error(undef).
 
 from_list(_) -> erlang:nif_error(undef).
 
+-spec intersect(Map1,Map2) -> Map3 when
+    Map1 :: #{Key => term()},
+    Map2 :: #{term() => Value2},
+    Map3 :: #{Key => Value2}.
+
+intersect(Map1, Map2) when is_map(Map1), is_map(Map2) ->
+    case map_size(Map1) =< map_size(Map2) of
+        true ->
+            intersect_with_small_map_first(fun intersect_combiner_v2/3, Map1, Map2);
+        false ->
+            intersect_with_small_map_first(fun intersect_combiner_v1/3, Map2, Map1)
+    end;
+intersect(Map1, Map2) ->
+    erlang:error(error_type_two_maps(Map1, Map2),
+                 [Map1,Map2]).
+
+intersect_combiner_v1(_K, V1, _V2) -> V1.
+intersect_combiner_v2(_K, _V1, V2) -> V2.
+
+-spec intersect_with(Combiner, Map1, Map2) -> Map3 when
+    Map1 :: #{Key => Value1},
+    Map2 :: #{term() => Value2},
+    Combiner :: fun((Key, Value1, Value2) -> CombineResult),
+    Map3 :: #{Key => CombineResult}.
+
+intersect_with(Combiner, Map1, Map2) when is_map(Map1),
+                                          is_map(Map2),
+                                          is_function(Combiner, 3) ->
+    %% Use =< because we want to avoid reversing the combiner if we can
+    case map_size(Map1) =< map_size(Map2) of
+        true ->
+            intersect_with_small_map_first(Combiner, Map1, Map2);
+        false ->
+            RCombiner = fun(K, V1, V2) -> Combiner(K, V2, V1) end,
+            intersect_with_small_map_first(RCombiner, Map2, Map1)
+    end;
+intersect_with(Combiner, Map1, Map2) ->
+    error(error_type_merge_intersect(Map1, Map2, Combiner),
+          [Combiner, Map1, Map2]).
+
+intersect_with_small_map_first(Combiner, SmallMap, BigMap) ->
+    Next = maps:next(maps:iterator(SmallMap)),
+    intersect_with_iterate(Next, [], SmallMap, BigMap, Combiner).
+
+intersect_with_iterate({K, V1, Iterator}, Keep, Map1, Map2, Combiner) ->
+    Next = maps:next(Iterator),
+    case Map2 of
+        #{ K := V2 } ->
+            V = Combiner(K, V1, V2),
+            intersect_with_iterate(Next, [{K,V}|Keep], Map1, Map2, Combiner);
+        _ ->
+            intersect_with_iterate(Next, Keep, Map1, Map2, Combiner)
+    end;
+intersect_with_iterate(none, Keep, _Map1, _Map2, _Combiner) ->
+    maps:from_list(Keep).
 
 %% Shadowed by erl_bif_types: maps:is_key/2
 -spec is_key(Key,Map) -> boolean() when
@@ -88,6 +145,44 @@ keys(_) -> erlang:nif_error(undef).
     Map3 :: map().
 
 merge(_,_) -> erlang:nif_error(undef).
+
+-spec merge_with(Combiner, Map1, Map2) -> Map3 when
+    Map1 :: #{Key1 => Value1},
+    Map2 :: #{Key2 => Value2},
+    Combiner :: fun((Key1, Value1, Value2) -> CombineResult),
+    Map3 :: #{Key1 => CombineResult, Key1 => Value1, Key2 => Value2}.
+
+merge_with(Combiner, Map1, Map2) when is_map(Map1),
+                                 is_map(Map2),
+                                 is_function(Combiner, 3) ->
+    case map_size(Map1) > map_size(Map2) of
+        true ->
+            Iterator = maps:iterator(Map2),
+            merge_with_1(maps:next(Iterator),
+                         Map1,
+                         Map2,
+                         Combiner);
+        false ->
+            Iterator = maps:iterator(Map1),
+            merge_with_1(maps:next(Iterator),
+                         Map2,
+                         Map1,
+                         fun(K, V1, V2) -> Combiner(K, V2, V1) end)
+    end;
+merge_with(Combiner, Map1, Map2) ->
+    erlang:error(error_type_merge_intersect(Map1, Map2, Combiner),
+                 [Combiner, Map1, Map2]).
+
+merge_with_1({K, V2, Iterator}, Map1, Map2, Combiner) ->
+    case Map1 of
+        #{ K := V1 } ->
+            NewMap1 = Map1#{ K := Combiner(K, V1, V2) },
+            merge_with_1(maps:next(Iterator), NewMap1, Map2, Combiner);
+        #{ } ->
+            merge_with_1(maps:next(Iterator), maps:put(K, V2, Map1), Map2, Combiner)
+    end;
+merge_with_1(none, Result, _, _) ->
+    Result.
 
 
 %% Shadowed by erl_bif_types: maps:put/3
@@ -213,6 +308,34 @@ filter_1(Pred, Iter) ->
             []
     end.
 
+
+-spec filtermap(Fun, MapOrIter) -> Map when
+      Fun :: fun((Key, Value1) -> boolean() | {true, Value2}),
+      MapOrIter :: #{Key => Value1} | iterator(Key, Value1),
+      Map :: #{Key => Value1 | Value2}.
+
+filtermap(Fun, Map) when is_function(Fun, 2), is_map(Map) ->
+    maps:from_list(filtermap_1(Fun, iterator(Map)));
+filtermap(Fun, Iterator) when is_function(Fun, 2), ?IS_ITERATOR(Iterator) ->
+    maps:from_list(filtermap_1(Fun, Iterator));
+filtermap(Fun, Map) ->
+    erlang:error(error_type(Map), [Fun, Map]).
+
+filtermap_1(Pred, Iter) ->
+    case next(Iter) of
+	{K, V, NextIter} ->
+	    case Pred(K, V) of
+		true ->
+		    [{K, V} | filtermap_1(Pred, NextIter)];
+		{true, NewV} ->
+		    [{K, NewV} | filtermap_1(Pred, NextIter)];
+		false ->
+		    filtermap_1(Pred, NextIter)
+	    end;
+	none ->
+	    []
+    end.
+
 -spec fold(Fun,Init,MapOrIter) -> Acc when
     Fun :: fun((Key, Value, AccIn) -> AccOut),
     Init :: term(),
@@ -315,3 +438,13 @@ error_type(V) -> {badmap, V}.
 
 error_type_iter(M) when is_map(M); ?IS_ITERATOR(M) -> badarg;
 error_type_iter(V) -> {badmap, V}.
+
+error_type_two_maps(M1, M2) when is_map(M1) ->
+    {badmap, M2};
+error_type_two_maps(M1, _M2) ->
+    {badmap, M1}.
+
+error_type_merge_intersect(M1, M2, Combiner) when is_function(Combiner, 3) ->
+    error_type_two_maps(M1, M2);
+error_type_merge_intersect(_M1, _M2, _Combiner) ->
+    badarg.

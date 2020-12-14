@@ -21,26 +21,27 @@
 
 -module(beam_ssa).
 -export([add_anno/3,get_anno/2,get_anno/3,
+         between/4,
          clobbers_xregs/1,def/2,def_unused/3,
-         definitions/1,
-         dominators/1,common_dominators/3,
-         flatmapfold_instrs_rpo/4,
-         fold_po/3,fold_po/4,fold_rpo/3,fold_rpo/4,
-         fold_instrs_rpo/4,
+         definitions/2,
+         dominators/2,dominators_from_predecessors/2,common_dominators/3,
+         flatmapfold_instrs/4,
+         fold_blocks/4,
+         fold_instrs/4,
          is_loop_header/1,
          linearize/1,
-         mapfold_blocks_rpo/4,
-         mapfold_instrs_rpo/4,
-         merge_blocks/1,
+         mapfold_blocks/4,
+         mapfold_instrs/4,
+         merge_blocks/2,
          normalize/1,
          no_side_effect/1,
          predecessors/1,
          rename_vars/3,
          rpo/1,rpo/2,
-         split_blocks/3,
+         split_blocks/4,
          successors/1,successors/2,
          trim_unreachable/1,
-         used/1,uses/1,uses/2]).
+         used/1,uses/2]).
 
 -export_type([b_module/0,b_function/0,b_blk/0,b_set/0,
               b_ret/0,b_br/0,b_switch/0,terminator/0,
@@ -49,7 +50,7 @@
               var_name/0,var_base/0,literal_value/0,
               op/0,anno/0,block_map/0,dominator_map/0,
               rename_map/0,rename_proplist/0,usage_map/0,
-              definition_map/0]).
+              definition_map/0,predecessor_map/0]).
 
 -include("beam_ssa.hrl").
 
@@ -95,12 +96,13 @@
 -type numbering_map() :: #{label():=non_neg_integer()}.
 -type usage_map() :: #{b_var():=[{label(),b_set() | terminator()}]}.
 -type definition_map() :: #{b_var():=b_set()}.
+-type predecessor_map() :: #{label():=[label()]}.
 -type rename_map() :: #{b_var():=value()}.
 -type rename_proplist() :: [{b_var(),value()}].
 
 %% Note: By default, dialyzer will collapse this type to atom().
 %% To avoid the collapsing, change the value of SET_LIMIT to 50 in the
-%% file erl_types.erl in the hipe application.
+%% file erl_types.erl in the dialyzer application.
 
 -type prim_op() :: 'bs_add' | 'bs_extract' | 'bs_get_tail' |
                    'bs_init' | 'bs_init_writable' |
@@ -113,7 +115,7 @@
                    'is_nonempty_list' | 'is_tagged_tuple' |
                    'kill_try_tag' |
                    'landingpad' |
-                   'make_fun' | 'new_try_tag' |
+                   'make_fun' | 'new_try_tag' | 'old_make_fun' |
                    'peek_message' | 'phi' | 'put_list' | 'put_map' | 'put_tuple' |
                    'raw_raise' | 'recv_next' | 'remove_message' | 'resume' |
                    'timeout' |
@@ -177,7 +179,7 @@ clobbers_xregs(#b_set{op=Op}) ->
         build_stacktrace -> true;
         call -> true;
         landingpad -> true;
-        make_fun -> true;
+        old_make_fun -> true;
         peek_message -> true;
         raw_raise -> true;
         timeout -> true;
@@ -237,10 +239,9 @@ is_loop_header(#b_set{op=Op}) ->
         _ -> false
     end.
 
--spec predecessors(Blocks) -> #{BlockNumber:=[Predecessor]} when
+-spec predecessors(Blocks) -> Result when
       Blocks :: block_map(),
-      BlockNumber :: label(),
-      Predecessor :: label().
+      Result :: predecessor_map().
 
 predecessors(Blocks) ->
     P0 = [{S,L} || {L,Blk} <- maps:to_list(Blocks),
@@ -343,8 +344,7 @@ successors(L, Blocks) ->
       Def :: ordsets:ordset(var_name()).
 
 def(Ls, Blocks) ->
-    Top = rpo(Ls, Blocks),
-    Blks = [map_get(L, Blocks) || L <- Top],
+    Blks = [map_get(L, Blocks) || L <- Ls],
     def_1(Blks, []).
 
 -spec def_unused(Ls, Used, Blocks) -> {Def,Unused} when
@@ -355,12 +355,11 @@ def(Ls, Blocks) ->
       Unused :: ordsets:ordset(var_name()).
 
 def_unused(Ls, Unused, Blocks) ->
-    Top = rpo(Ls, Blocks),
-    Blks = [map_get(L, Blocks) || L <- Top],
-    Preds = cerl_sets:from_list(Top),
+    Blks = [map_get(L, Blocks) || L <- Ls],
+    Preds = cerl_sets:from_list(Ls),
     def_unused_1(Blks, Preds, [], Unused).
 
-%% dominators(BlockMap) -> {Dominators,Numbering}.
+%% dominators(Labels, BlockMap) -> {Dominators,Numbering}.
 %%  Calculate the dominator tree, returning a map where each entry
 %%  in the map is a list that gives the path from that block to
 %%  the top of the dominator tree. (Note that the suffixes of the
@@ -373,12 +372,19 @@ def_unused(Ls, Unused, Blocks) ->
 %%     Cooper, Keith D.; Harvey, Timothy J; Kennedy, Ken (2001).
 %%        A Simple, Fast Dominance Algorithm.
 
--spec dominators(Blocks) -> Result when
+-spec dominators(Labels, Blocks) -> Result when
+      Labels :: [label()],
       Blocks :: block_map(),
       Result :: {dominator_map(), numbering_map()}.
-dominators(Blocks) ->
+dominators(Labels, Blocks) ->
     Preds = predecessors(Blocks),
-    Top0 = rpo(Blocks),
+    dominators_from_predecessors(Labels, Preds).
+
+-spec dominators_from_predecessors(Labels, Preds) -> Result when
+      Labels :: [label()],
+      Preds :: predecessor_map(),
+      Result :: {dominator_map(), numbering_map()}.
+dominators_from_predecessors(Top0, Preds) ->
     Df = maps:from_list(number(Top0, 0)),
     [{0,[]}|Top] = [{L,map_get(L, Preds)} || L <- Top0],
 
@@ -396,115 +402,72 @@ common_dominators(Ls, Dom, Numbering) ->
     Doms = [map_get(L, Dom) || L <- Ls],
     dom_intersection(Doms, Numbering).
 
--spec fold_instrs_rpo(Fun, From, Acc0, Blocks) -> any() when
+-spec fold_instrs(Fun, Labels, Acc0, Blocks) -> any() when
       Fun :: fun((b_blk()|terminator(), any()) -> any()),
-      From :: [label()],
+      Labels :: [label()],
       Acc0 :: any(),
       Blocks :: block_map().
 
-fold_instrs_rpo(Fun, From, Acc0, Blocks) ->
-    Top = rpo(From, Blocks),
-    fold_instrs_rpo_1(Top, Fun, Blocks, Acc0).
+fold_instrs(Fun, Labels, Acc0, Blocks) ->
+    fold_instrs_1(Labels, Fun, Blocks, Acc0).
 
-%% Like mapfold_instrs_rpo but at the block level to support lookahead and
-%% scope-dependent transformations.
--spec mapfold_blocks_rpo(Fun, From, Acc, Blocks) -> Result when
+%% mapfold_blocks(Fun, [Label], Acc, BlockMap) -> {BlockMap,Acc}.
+%%  Like mapfold_instrs but at the block level to support lookahead
+%%  and scope-dependent transformations.
+
+-spec mapfold_blocks(Fun, Labels, Acc, Blocks) -> Result when
       Fun :: fun((label(), b_blk(), any()) -> {b_blk(), any()}),
-      From :: [label()],
+      Labels :: [label()],
       Acc :: any(),
       Blocks :: block_map(),
       Result :: {block_map(), any()}.
-mapfold_blocks_rpo(Fun, From, Acc, Blocks) ->
-    Successors = rpo(From, Blocks),
+mapfold_blocks(Fun, Labels, Acc, Blocks) ->
     foldl(fun(Lbl, A) ->
-                  mapfold_blocks_rpo_1(Fun, Lbl, A)
-          end, {Blocks, Acc}, Successors).
+                  mapfold_blocks_1(Fun, Lbl, A)
+          end, {Blocks, Acc}, Labels).
 
-mapfold_blocks_rpo_1(Fun, Lbl, {Blocks0, Acc0}) ->
+mapfold_blocks_1(Fun, Lbl, {Blocks0, Acc0}) ->
     Block0 = map_get(Lbl, Blocks0),
     {Block, Acc} = Fun(Lbl, Block0, Acc0),
     Blocks = Blocks0#{Lbl:=Block},
     {Blocks, Acc}.
 
--spec mapfold_instrs_rpo(Fun, From, Acc0, Blocks0) -> {Blocks,Acc} when
+-spec mapfold_instrs(Fun, Labels, Acc0, Blocks0) -> {Blocks,Acc} when
       Fun :: fun((b_blk()|terminator(), any()) -> any()),
-      From :: [label()],
+      Labels :: [label()],
       Acc0 :: any(),
       Acc :: any(),
       Blocks0 :: block_map(),
       Blocks :: block_map().
 
-mapfold_instrs_rpo(Fun, From, Acc0, Blocks) ->
-    Top = rpo(From, Blocks),
-    mapfold_instrs_rpo_1(Top, Fun, Blocks, Acc0).
+mapfold_instrs(Fun, Labels, Acc0, Blocks) ->
+    mapfold_instrs_1(Labels, Fun, Blocks, Acc0).
 
--spec flatmapfold_instrs_rpo(Fun, From, Acc0, Blocks0) -> {Blocks,Acc} when
+-spec flatmapfold_instrs(Fun, Labels, Acc0, Blocks0) -> {Blocks,Acc} when
       Fun :: fun((b_blk()|terminator(), any()) -> any()),
-      From :: [label()],
+      Labels :: [label()],
       Acc0 :: any(),
       Acc :: any(),
       Blocks0 :: block_map(),
       Blocks :: block_map().
 
-flatmapfold_instrs_rpo(Fun, From, Acc0, Blocks) ->
-    Top = rpo(From, Blocks),
-    flatmapfold_instrs_rpo_1(Top, Fun, Blocks, Acc0).
+flatmapfold_instrs(Fun, Labels, Acc0, Blocks) ->
+    flatmapfold_instrs_1(Labels, Fun, Blocks, Acc0).
 
 -type fold_fun() :: fun((label(), b_blk(), any()) -> any()).
 
-%% fold_rpo(Fun, [Label], Acc0, Blocks) -> Acc.
-%%  Fold over all blocks a reverse postorder traversal of the block
-%%  graph; that is, first visit a block, then visit its successors.
+%% fold_blocks(Fun, [Label], Acc0, Blocks) -> Acc.  Fold over all blocks
+%%  from a given set of labels in a reverse postorder traversal of the
+%%  block graph; that is, first visit a block, then visit its successors.
 
--spec fold_rpo(Fun, Acc0, Blocks) -> any() when
-      Fun :: fold_fun(),
-      Acc0 :: any(),
-      Blocks :: #{label():=b_blk()}.
-
-fold_rpo(Fun, Acc0, Blocks) ->
-    fold_rpo(Fun, [0], Acc0, Blocks).
-
-%% fold_rpo(Fun, [Label], Acc0, Blocks) -> Acc.  Fold over all blocks
-%%  reachable from a given set of labels in a reverse postorder
-%%  traversal of the block graph; that is, first visit a block, then
-%%  visit its successors.
-
--spec fold_rpo(Fun, Labels, Acc0, Blocks) -> any() when
+-spec fold_blocks(Fun, Labels, Acc0, Blocks) -> any() when
       Fun :: fold_fun(),
       Labels :: [label()],
       Acc0 :: any(),
       Blocks :: #{label():=b_blk()}.
 
-fold_rpo(Fun, From, Acc0, Blocks) ->
-    Top = rpo(From, Blocks),
-    fold_rpo_1(Top, Fun, Blocks, Acc0).
-
-%% fold_po(Fun, Acc0, Blocks) -> Acc.
-%%  Fold over all blocks in a postorder traversal of the block graph;
-%%  that is, first visit all successors of block, then the block
-%%  itself.
-
--spec fold_po(Fun, Acc0, Blocks) -> any() when
-      Fun :: fold_fun(),
-      Acc0 :: any(),
-      Blocks :: #{label():=b_blk()}.
-
-%% fold_po(Fun, From, Acc0, Blocks) -> Acc.
-%%  Fold over the blocks reachable from the block numbers given
-%%  by From in a postorder traversal of the block graph.
-
-fold_po(Fun, Acc0, Blocks) ->
-    fold_po(Fun, [0], Acc0, Blocks).
-
--spec fold_po(Fun, Labels, Acc0, Blocks) -> any() when
-      Fun :: fold_fun(),
-      Labels :: [label()],
-      Acc0 :: any(),
-      Blocks :: block_map().
-
-fold_po(Fun, From, Acc0, Blocks) ->
-    Top = reverse(rpo(From, Blocks)),
-    fold_rpo_1(Top, Fun, Blocks, Acc0).
+fold_blocks(Fun, Labels, Acc0, Blocks) ->
+    fold_blocks_1(Labels, Fun, Blocks, Acc0).
 
 %% linearize(Blocks) -> [{BlockLabel,#b_blk{}}].
 %%  Linearize the intermediate representation of the code.
@@ -540,14 +503,38 @@ rpo(From, Blocks) ->
     {Ls,_} = rpo_1(From, Blocks, Seen, []),
     Ls.
 
+%% between(From, To, Preds, Blocks) -> RPO
+%%  Returns all the blocks between `From` and `To` in reverse post-order. This
+%%  is most efficient when `From` dominates `To`, as it won't visit any
+%%  unnecessary blocks in that case.
+
+-spec between(From, To, Preds, Blocks) -> Labels when
+      From :: label(),
+      To :: label(),
+      Preds :: predecessor_map(),
+      Blocks :: block_map(),
+      Labels :: [label()].
+
+between(From, To, Preds, Blocks) ->
+    %% Gather the predecessors of `To` and then walk forward from `From`,
+    %% skipping the blocks that don't precede `To`.
+    %%
+    %% As an optimization we initialize the predecessor set with `From` to stop
+    %% gathering once seen since we're only interested in the blocks inbetween.
+    %% Uninteresting blocks can still be added if `From` doesn't dominate `To`,
+    %% but that has no effect on the final result.
+    Filter = between_make_filter([To], Preds, cerl_sets:from_list([From])),
+    {Paths, _} = between_rpo([From], Blocks, Filter, []),
+
+    Paths.
+
 -spec rename_vars(Rename, [label()], block_map()) -> block_map() when
       Rename :: rename_map() | rename_proplist().
 
-rename_vars(Rename, From, Blocks) when is_list(Rename) ->
-    rename_vars(maps:from_list(Rename), From, Blocks);
-rename_vars(Rename, From, Blocks) when is_map(Rename)->
-    Top = rpo(From, Blocks),
-    Preds = cerl_sets:from_list(Top),
+rename_vars(Rename, Labels, Blocks) when is_list(Rename) ->
+    rename_vars(maps:from_list(Rename), Labels, Blocks);
+rename_vars(Rename, Labels, Blocks) when is_map(Rename)->
+    Preds = cerl_sets:from_list(Labels),
     F = fun(#b_set{op=phi,args=Args0}=Set) ->
                 Args = rename_phi_vars(Args0, Preds, Rename),
                 normalize(Set#b_set{args=Args});
@@ -561,23 +548,23 @@ rename_vars(Rename, From, Blocks) when is_map(Rename)->
            (#b_ret{arg=Arg}=Ret) ->
                 normalize(Ret#b_ret{arg=rename_var(Arg, Rename)})
         end,
-    map_instrs_1(Top, F, Blocks).
+    map_instrs_1(Labels, F, Blocks).
 
 %% split_blocks(Predicate, Blocks0, Count0) -> {Blocks,Count}.
 %%  Call Predicate(Instruction) for each instruction in all
 %%  blocks. If Predicate/1 returns true, split the block
 %%  before this instruction.
 
--spec split_blocks(Pred, Blocks0, Count0) -> {Blocks,Count} when
+-spec split_blocks(Labels, Pred, Blocks0, Count0) -> {Blocks,Count} when
+      Labels :: [label()],
       Pred :: fun((b_set()) -> boolean()),
       Blocks :: block_map(),
-      Count0 :: beam_ssa:label(),
+      Count0 :: label(),
       Blocks0 :: block_map(),
       Blocks :: block_map(),
-      Count :: beam_ssa:label().
+      Count :: label().
 
-split_blocks(P, Blocks, Count) ->
-    Ls = beam_ssa:rpo(Blocks),
+split_blocks(Ls, P, Blocks, Count) ->
     split_blocks_1(Ls, P, Blocks, Count).
 
 -spec trim_unreachable(SSA0) -> SSA when
@@ -611,23 +598,23 @@ used(#b_switch{arg=#b_var{}=V}) ->
     [V];
 used(_) -> [].
 
--spec definitions(Blocks :: block_map()) -> definition_map().
-definitions(Blocks) ->
-    fold_instrs_rpo(fun(#b_set{ dst = Var }=I, Acc) ->
+-spec definitions(Labels :: [label()], Blocks :: block_map()) -> definition_map().
+definitions(Labels, Blocks) ->
+    fold_instrs(fun(#b_set{ dst = Var }=I, Acc) ->
                             Acc#{Var => I};
                        (_Terminator, Acc) ->
                             Acc
-                    end, [0], #{}, Blocks).
+                    end, Labels, #{}, Blocks).
 
--spec uses(Blocks :: block_map()) -> usage_map().
-uses(Blocks) ->
-    uses([0], Blocks).
-
--spec uses(From, Blocks) -> usage_map() when
-      From :: [label()],
+%% uses(Labels, BlockMap) -> UsageMap
+%%  Traverse the blocks given by labels and builds a usage map
+%%  with variables as keys and a list of labels-instructions
+%%  tuples as values.
+-spec uses(Labels, Blocks) -> usage_map() when
+      Labels :: [label()],
       Blocks :: block_map().
-uses(From, Blocks) ->
-    fold_rpo(fun fold_uses_block/3, From, #{}, Blocks).
+uses(Labels, Blocks) ->
+    fold_blocks(fun fold_uses_block/3, Labels, #{}, Blocks).
 
 fold_uses_block(Lbl, #b_blk{is=Is,last=Last}, UseMap0) ->
     F = fun(I, UseMap) ->
@@ -639,15 +626,15 @@ fold_uses_block(Lbl, #b_blk{is=Is,last=Last}, UseMap0) ->
         end,
     F(Last, foldl(F, UseMap0, Is)).
 
--spec merge_blocks(block_map()) -> block_map().
+-spec merge_blocks([label()], block_map()) -> block_map().
 
-merge_blocks(Blocks) ->
+merge_blocks(Labels, Blocks) ->
     Preds = predecessors(Blocks),
 
     %% We must traverse the blocks in reverse postorder to avoid
     %% embedding succeeded:guard instructions into the middle of
     %% blocks when this function is called from beam_ssa_bool.
-    merge_blocks_1(rpo(Blocks), Preds, Blocks).
+    merge_blocks_1(Labels, Preds, Blocks).
 
 %%%
 %%% Internal functions.
@@ -732,37 +719,37 @@ number([L|Ls], N) ->
     [{L,N}|number(Ls, N+1)];
 number([], _) -> [].
 
-fold_rpo_1([L|Ls], Fun, Blocks, Acc0) ->
+fold_blocks_1([L|Ls], Fun, Blocks, Acc0) ->
     Block = map_get(L, Blocks),
     Acc = Fun(L, Block, Acc0),
-    fold_rpo_1(Ls, Fun, Blocks, Acc);
-fold_rpo_1([], _, _, Acc) -> Acc.
+    fold_blocks_1(Ls, Fun, Blocks, Acc);
+fold_blocks_1([], _, _, Acc) -> Acc.
 
-fold_instrs_rpo_1([L|Ls], Fun, Blocks, Acc0) ->
+fold_instrs_1([L|Ls], Fun, Blocks, Acc0) ->
     #b_blk{is=Is,last=Last} = map_get(L, Blocks),
     Acc1 = foldl(Fun, Acc0, Is),
     Acc = Fun(Last, Acc1),
-    fold_instrs_rpo_1(Ls, Fun, Blocks, Acc);
-fold_instrs_rpo_1([], _, _, Acc) -> Acc.
+    fold_instrs_1(Ls, Fun, Blocks, Acc);
+fold_instrs_1([], _, _, Acc) -> Acc.
 
-mapfold_instrs_rpo_1([L|Ls], Fun, Blocks0, Acc0) ->
+mapfold_instrs_1([L|Ls], Fun, Blocks0, Acc0) ->
     #b_blk{is=Is0,last=Last0} = Block0 = map_get(L, Blocks0),
     {Is,Acc1} = mapfoldl(Fun, Acc0, Is0),
     {Last,Acc} = Fun(Last0, Acc1),
     Block = Block0#b_blk{is=Is,last=Last},
     Blocks = Blocks0#{L:=Block},
-    mapfold_instrs_rpo_1(Ls, Fun, Blocks, Acc);
-mapfold_instrs_rpo_1([], _, Blocks, Acc) ->
+    mapfold_instrs_1(Ls, Fun, Blocks, Acc);
+mapfold_instrs_1([], _, Blocks, Acc) ->
     {Blocks,Acc}.
 
-flatmapfold_instrs_rpo_1([L|Ls], Fun, Blocks0, Acc0) ->
+flatmapfold_instrs_1([L|Ls], Fun, Blocks0, Acc0) ->
     #b_blk{is=Is0,last=Last0} = Block0 = map_get(L, Blocks0),
     {Is,Acc1} = flatmapfoldl(Fun, Acc0, Is0),
     {[Last],Acc} = Fun(Last0, Acc1),
     Block = Block0#b_blk{is=Is,last=Last},
     Blocks = Blocks0#{L:=Block},
-    flatmapfold_instrs_rpo_1(Ls, Fun, Blocks, Acc);
-flatmapfold_instrs_rpo_1([], _, Blocks, Acc) ->
+    flatmapfold_instrs_1(Ls, Fun, Blocks, Acc);
+flatmapfold_instrs_1([], _, Blocks, Acc) ->
     {Blocks,Acc}.
 
 linearize_1([L|Ls], Blocks, Seen0, Acc0) ->
@@ -831,6 +818,35 @@ trim_phis_1([#b_set{op=phi,args=Args0}=I|Is], Seen) ->
     Args = [P || {_,L}=P <- Args0, cerl_sets:is_element(L, Seen)],
     [I#b_set{args=Args}|trim_phis_1(Is, Seen)];
 trim_phis_1(Is, _Seen) -> Is.
+
+between_make_filter([L | Ls], Preds, Acc0) ->
+    case cerl_sets:is_element(L, Acc0) of
+        true ->
+            between_make_filter(Ls, Preds, Acc0);
+        false ->
+            Next = map_get(L, Preds),
+            Acc1 = cerl_sets:add_element(L, Acc0),
+
+            Acc = between_make_filter(Next, Preds, Acc1),
+            between_make_filter(Ls, Preds, Acc)
+    end;
+between_make_filter([], _Preds, Acc) ->
+    Acc.
+
+between_rpo([L | Ls], Blocks, Filter0, Acc0) ->
+    case cerl_sets:is_element(L, Filter0) of
+        true ->
+            Block = map_get(L, Blocks),
+            Filter1 = cerl_sets:del_element(L, Filter0),
+
+            Successors = successors(Block),
+            {Acc, Filter} = between_rpo(Successors, Blocks, Filter1, Acc0),
+            between_rpo(Ls, Blocks, Filter, [L | Acc]);
+        false ->
+            between_rpo(Ls, Blocks, Filter0, Acc0)
+    end;
+between_rpo([], _, Filter, Acc) ->
+    {Acc, Filter}.
 
 rpo_1([L|Ls], Blocks, Seen0, Acc0) ->
     case cerl_sets:is_element(L, Seen0) of

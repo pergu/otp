@@ -38,6 +38,7 @@
 #define SZT(I)   ((size_t) (I))
 #define VOIDP(P) ((void*) (P))
 #define CHARP(P) ((char*) (P))
+#define UCHARP(P) ((unsigned char*) (P))
 
 #define ESOCK_ABORT(E)  esock_abort(E, __func__, __FILE__, __LINE__)
 #define ESOCK_ASSERT(e) ((void) ((e) ? 1 : (ESOCK_ABORT(#e), 0)))
@@ -57,7 +58,7 @@ BOOLEAN_T esock_decode_iov(ErlNifEnv*    env,
                            ssize_t*      totSize);
 extern
 void esock_encode_iov(ErlNifEnv*    env,
-                      int           read,
+                      ssize_t       read,
                       struct iovec* iov,
                       size_t        len,
                       ErlNifBinary* data,
@@ -67,22 +68,22 @@ extern
 BOOLEAN_T esock_decode_sockaddr(ErlNifEnv*    env,
                                 ERL_NIF_TERM  eSockAddr,
                                 ESockAddress* sockAddrP,
-                                unsigned int* addrLen);
+                                SOCKLEN_T*    addrLen);
 extern
 void esock_encode_sockaddr(ErlNifEnv*    env,
                            ESockAddress* sockAddrP,
-                           unsigned int  addrLen,
+                           SOCKLEN_T     addrLen,
                            ERL_NIF_TERM* eSockAddr);
 
 extern
 BOOLEAN_T esock_decode_sockaddr_in(ErlNifEnv*          env,
                                    ERL_NIF_TERM        eSockAddr,
                                    struct sockaddr_in* sockAddrP,
-                                   unsigned int*       addrLen);
+                                   SOCKLEN_T*          addrLen);
 extern
 void esock_encode_sockaddr_in(ErlNifEnv*          env,
                               struct sockaddr_in* sockAddrP,
-                              unsigned int        addrLen,
+                              SOCKLEN_T           addrLen,
                               ERL_NIF_TERM*       eSockAddr);
 
 #if defined(HAVE_IN6) && defined(AF_INET6)
@@ -90,24 +91,24 @@ extern
 BOOLEAN_T esock_decode_sockaddr_in6(ErlNifEnv*           env,
                                     ERL_NIF_TERM         eSockAddr,
                                     struct sockaddr_in6* sockAddrP,
-                                    unsigned int*        addrLen);
+                                    SOCKLEN_T*           addrLen);
 extern
 void esock_encode_sockaddr_in6(ErlNifEnv*           env,
                                struct sockaddr_in6* sockAddrP,
-                               unsigned int         addrLen,
+                               SOCKLEN_T            addrLen,
                                ERL_NIF_TERM*        eSockAddr);
 #endif
 
-#ifdef HAVE_SYS_UN_H
+#ifdef HAS_AF_LOCAL
 extern
 BOOLEAN_T esock_decode_sockaddr_un(ErlNifEnv*          env,
                                    ERL_NIF_TERM        eSockAddr,
                                    struct sockaddr_un* sockAddrP,
-                                   unsigned int*       addrLen);
+                                   SOCKLEN_T*          addrLen);
 extern
 void esock_encode_sockaddr_un(ErlNifEnv*          env,
                               struct sockaddr_un* sockAddrP,
-                              unsigned int        addrLen,
+                              SOCKLEN_T           addrLen,
                               ERL_NIF_TERM*       eSockAddr);
 #endif
 
@@ -115,7 +116,7 @@ void esock_encode_sockaddr_un(ErlNifEnv*          env,
 extern
 void esock_encode_sockaddr_ll(ErlNifEnv*          env,
                               struct sockaddr_ll* sockAddrP,
-                              unsigned int        addrLen,
+                              SOCKLEN_T           addrLen,
                               ERL_NIF_TERM*       eSockAddr);
 #endif
 
@@ -165,15 +166,6 @@ void esock_encode_type(ErlNifEnv*    env,
                        ERL_NIF_TERM* eType);
 
 extern
-BOOLEAN_T esock_decode_protocol(ErlNifEnv*   env,
-                                ERL_NIF_TERM eProtocol,
-                                int*         protocol);
-extern
-void esock_encode_protocol(ErlNifEnv*    env,
-                           int           type,
-                           ERL_NIF_TERM* eProtocol);
-
-extern
 void esock_encode_packet_protocol(ErlNifEnv*     env,
                                   unsigned short protocol,
                                   ERL_NIF_TERM*  eProtocol);
@@ -220,9 +212,12 @@ BOOLEAN_T esock_extract_int_from_map(ErlNifEnv*   env,
 extern
 BOOLEAN_T esock_decode_bool(ERL_NIF_TERM eVal, BOOLEAN_T* val);
 extern
-BOOLEAN_T esock_decode_bool_val(ERL_NIF_TERM eVal, int *error);
-extern
 ERL_NIF_TERM esock_encode_bool(BOOLEAN_T val);
+
+extern
+BOOLEAN_T esock_decode_level(ErlNifEnv* env, ERL_NIF_TERM eVal, int *val);
+extern
+ERL_NIF_TERM esock_encode_level(ErlNifEnv* env, int level);
 
 extern
 size_t esock_strnlen(const char *s, size_t maxlen);
@@ -238,17 +233,19 @@ ERL_NIF_TERM esock_self(ErlNifEnv* env);
 extern
 ERL_NIF_TERM esock_make_ok2(ErlNifEnv* env, ERL_NIF_TERM any);
 extern
-ERL_NIF_TERM esock_make_ok3(ErlNifEnv* env, ERL_NIF_TERM val1, ERL_NIF_TERM val2);
-
-extern
 ERL_NIF_TERM esock_make_error(ErlNifEnv* env, ERL_NIF_TERM reason);
 extern
 ERL_NIF_TERM esock_make_error_str(ErlNifEnv* env, char* reason);
 extern
 ERL_NIF_TERM esock_make_error_errno(ErlNifEnv* env, int err);
 extern
-ERL_NIF_TERM esock_raise_invalid(ErlNifEnv* env,
-                                 ERL_NIF_TERM what, ERL_NIF_TERM info);
+ERL_NIF_TERM esock_make_error_invalid(ErlNifEnv* env, ERL_NIF_TERM what);
+extern
+ERL_NIF_TERM esock_make_error_integer_range(ErlNifEnv* env, ERL_NIF_TERM i);
+extern
+ERL_NIF_TERM esock_make_invalid(ErlNifEnv* env, ERL_NIF_TERM reason);
+extern
+ERL_NIF_TERM esock_raise_invalid(ErlNifEnv* env, ERL_NIF_TERM what);
 
 extern
 ERL_NIF_TERM esock_make_new_binary(ErlNifEnv *env, void *buf, size_t size);
@@ -265,5 +262,7 @@ BOOLEAN_T esock_format_timestamp(ErlNifTime timestamp, char *buf, unsigned int l
 extern
 void esock_warning_msg(const char* format, ... );
 
+extern
+BOOLEAN_T esock_is_integer(ErlNifEnv *env, ERL_NIF_TERM term);
 
 #endif // SOCKET_UTIL_H__
