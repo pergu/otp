@@ -252,7 +252,7 @@
       <name name="send_destination"></name>
       <desc>
         <p>The destination for a send operation, can be a remote or local process identifier,
-          a (local) port, a locally registered name, or a tuple
+          a (local) port, a reference denoting a process alias, a locally registered name, or a tuple
           <c>{<anno>RegName</anno>, <anno>Node</anno>}</c>
         for a registered name at another node.</p>
       </desc>
