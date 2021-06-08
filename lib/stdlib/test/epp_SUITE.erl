@@ -120,7 +120,7 @@ file_macro(Config) when is_list(Config) ->
     %% Both attribute a and b are defined as ?FILE, they should be the same
     {value, {attribute,_,a,FileA}} = lists:keysearch(a,3,List),
     {value, {attribute,_,b,FileB}} = lists:keysearch(b,3,List),
-    FileA = FileB,
+    "Other source" = FileA = FileB,
     ok.
 
 %%% Here is a little reimplementation of epp:parse_file, which times out
